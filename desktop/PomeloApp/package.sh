@@ -149,7 +149,7 @@ fi
 DMG_URL="https://github.com/pomelohq/pomelo/releases/download/v$VERSION/Pomelo-$VERSION.dmg"
 
 # Sparkle shows <description> (HTML) in the update dialog. Render RELEASE_NOTES
-# (set by release-app.sh) as a bullet list, else a generic line.
+# (optional; CI leaves it unset and uses --generate-notes) as a bullet list, else generic.
 DESC="<p>Pomelo $VERSION</p>"
 if [ -n "${RELEASE_NOTES:-}" ]; then
   LIS=$(printf '%s\n' "$RELEASE_NOTES" | sed -n 's/^[-*][[:space:]]*\(.*\)/<li>\1<\/li>/p' | tr -d '\n')
