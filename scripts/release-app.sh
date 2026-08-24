@@ -28,7 +28,7 @@ else
     NOTES="$(git log --no-merges --pretty=format:'- %s' "$PREV_TAG..$TAG" \
       | grep -viE '^- (chore|refactor|test|ci|style)(\(|:)' || true)"
   fi
-  [ -n "$NOTES" ] || NOTES="Pomelo $TAG"
+  [ -n "${NOTES:-}" ] || NOTES="Pomelo $TAG"
 fi
 export RELEASE_NOTES="$NOTES"   # package.sh renders it as the appcast <description>
 
