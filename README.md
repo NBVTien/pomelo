@@ -45,7 +45,7 @@ Download the latest signed, notarized DMG from
 [Releases](https://github.com/pomelohq/pomelo/releases/latest),
 drag **Pomelo** into **Applications**, and open it. macOS 14+ · Apple Silicon.
 
-Full docs: **https://pom.toantran292.net/**
+Full docs: **https://pomelohq.app/**
 
 ## Build from source
 

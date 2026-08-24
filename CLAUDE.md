@@ -34,7 +34,7 @@ Then `make app-publish`. The app self-updates via Sparkle (appcast); there is no
 ## Docs Rule
 
 **Docs live in a separate repo: `toantran292/pomelo-docs`** (VitePress →
-GitHub Pages at https://pom.toantran292.net/). They are NOT
+GitHub Pages at https://pomelohq.app/). They are NOT
 in this repo.
 
 **ALWAYS update the docs when a change affects user-facing behavior.** Any
