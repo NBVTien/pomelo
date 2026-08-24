@@ -1,0 +1,486 @@
+package forge
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/pomelohq/pomelo/internal/httpx"
+	"github.com/pomelohq/pomelo/internal/services"
+)
+
+func (s *Feature) handleChangedFiles(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	repo := r.URL.Query().Get("repo")
+	isMain := r.URL.Query().Get("is_main") == "true"
+	if branch == "" || repo == "" {
+		http.Error(w, "missing branch/repo", http.StatusBadRequest)
+		return
+	}
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	base := services.BaseRef(defBranch(s.cfg(), repo), wt)
+
+	out, err := exec.Command("git", "-C", wt, "diff", "--name-status",
+		"--find-renames", base+"...HEAD").Output()
+	if err != nil {
+		http.Error(w, "git diff failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type entry struct {
+		Path    string `json:"path"`
+		Status  string `json:"status"`
+		OldPath string `json:"old_path,omitempty"`
+	}
+	var files []entry
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 2 {
+			continue
+		}
+		st := fields[0]
+		if strings.HasPrefix(st, "R") && len(fields) >= 3 {
+			files = append(files, entry{Path: fields[2], Status: "R", OldPath: fields[1]})
+			continue
+		}
+		files = append(files, entry{Path: fields[len(fields)-1], Status: st[:1]})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"base": base, "files": files})
+}
+
+func (s *Feature) handleFileContent(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	repo := r.URL.Query().Get("repo")
+	isMain := r.URL.Query().Get("is_main") == "true"
+	path := r.URL.Query().Get("path")
+	ref := r.URL.Query().Get("ref")
+	if branch == "" || repo == "" || path == "" || ref == "" {
+		http.Error(w, "missing branch/repo/path/ref", http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(path, "..") {
+		http.Error(w, "path contains ..", http.StatusBadRequest)
+		return
+	}
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	var gitRef string
+	switch ref {
+	case "branch":
+		gitRef = "HEAD"
+	case "base":
+		gitRef = services.BaseRef(defBranch(s.cfg(), repo), wt)
+	default:
+		http.Error(w, "ref must be branch|base", http.StatusBadRequest)
+		return
+	}
+	out, err := exec.Command("git", "-C", wt, "show", gitRef+":"+path).Output()
+	if err != nil {
+		http.Error(w, "file not found at ref", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write(out)
+}
+
+func (s *Feature) handlePRDetail(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	repo := r.URL.Query().Get("repo")
+	if branch == "" || repo == "" {
+		httpx.Err(w, http.StatusBadRequest, "missing branch/repo")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(s.PRDetail(branch, repo, r.URL.Query().Get("is_main") == "true"))
+}
+
+func (s *Feature) PRDetail(branch, repo string, isMain bool) []byte {
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	key := "detail:" + wt
+	prCacheMu.Lock()
+	if hit, ok := prCache[key]; ok && time.Since(hit.at) < 30*time.Second {
+		body := hit.body
+		prCacheMu.Unlock()
+		return body
+	}
+	prCacheMu.Unlock()
+
+	owner, name, ok := ownerRepo(wt)
+	head := services.CurrentBranch(wt)
+	var body []byte
+	if !ok || head == "" {
+		body, _ = json.Marshal(map[string]any{"pr": nil})
+	} else {
+		q := fmt.Sprintf(`query { repository(owner: %q, name: %q) { pullRequests(headRefName: %q, first: 1, states: [OPEN, MERGED, CLOSED], orderBy: {field: UPDATED_AT, direction: DESC}) { nodes {
+%s      body
+        labels(first: 20) { nodes { name color } }
+        reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
+        comments(first: 50) { nodes { author { login } body createdAt } }
+      } } } }`, owner, name, head, prNodeFields)
+		out, err := gqlQuery(context.Background(), q)
+		var r struct {
+			Data struct {
+				Repository *struct {
+					PullRequests struct {
+						Nodes []gqlPR `json:"nodes"`
+					} `json:"pullRequests"`
+				} `json:"repository"`
+			} `json:"data"`
+		}
+		if err == nil && json.Unmarshal(out, &r) == nil && r.Data.Repository != nil && len(r.Data.Repository.PullRequests.Nodes) > 0 {
+			body, _ = json.Marshal(map[string]any{"pr": r.Data.Repository.PullRequests.Nodes[0].toGH()})
+		} else {
+			body, _ = json.Marshal(map[string]any{"pr": nil})
+		}
+	}
+	prCacheMu.Lock()
+	prCache[key] = prCacheEntry{body: body, at: time.Now()}
+	prCacheMu.Unlock()
+	return body
+}
+
+func (s *Feature) handlePRReviewComments(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	repo := r.URL.Query().Get("repo")
+	if branch == "" || repo == "" {
+		httpx.Err(w, http.StatusBadRequest, "missing branch/repo")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(s.PRComments(branch, repo, r.URL.Query().Get("is_main") == "true"))
+}
+
+func (s *Feature) PRComments(branch, repo string, isMain bool) []byte {
+	empty := []byte(`{"comments":[]}`)
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	owner, name, ok := ownerRepo(wt)
+	if !ok {
+		return empty
+	}
+	head := services.CurrentBranch(wt)
+	if head == "" {
+		return empty
+	}
+	ctx := context.Background()
+	numRaw, err := restGET(ctx, fmt.Sprintf("repos/%s/%s/pulls?head=%s:%s&state=all&per_page=1", owner, name, owner, head))
+	if err != nil {
+		return empty
+	}
+	var pulls []struct {
+		Number int `json:"number"`
+	}
+	if json.Unmarshal(numRaw, &pulls) != nil || len(pulls) == 0 {
+		return empty
+	}
+	raw, err := restGET(ctx, fmt.Sprintf("repos/%s/%s/pulls/%d/comments?per_page=100", owner, name, pulls[0].Number))
+	if err != nil {
+		return empty
+	}
+	var apiComments []struct {
+		User         struct{ Login string } `json:"user"`
+		Body         string                 `json:"body"`
+		Path         string                 `json:"path"`
+		Line         *int                   `json:"line"`
+		OriginalLine *int                   `json:"original_line"`
+		DiffHunk     string                 `json:"diff_hunk"`
+		CreatedAt    string                 `json:"created_at"`
+	}
+	if json.Unmarshal(raw, &apiComments) != nil {
+		return empty
+	}
+	type outComment struct {
+		User      string `json:"user"`
+		Body      string `json:"body"`
+		Path      string `json:"path"`
+		Line      *int   `json:"line"`
+		DiffHunk  string `json:"diffHunk"`
+		CreatedAt string `json:"createdAt"`
+	}
+	out := make([]outComment, 0, len(apiComments))
+	for _, c := range apiComments {
+		line := c.Line
+		if line == nil {
+			line = c.OriginalLine
+		}
+		out = append(out, outComment{User: c.User.Login, Body: c.Body, Path: c.Path, Line: line, DiffHunk: c.DiffHunk, CreatedAt: c.CreatedAt})
+	}
+	b, _ := json.Marshal(map[string]any{"comments": out})
+	return b
+}
+
+const maxDiffBytes = 512 * 1024
+
+func (s *Feature) handleDiff(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	repo := r.URL.Query().Get("repo")
+	if branch == "" || repo == "" {
+		httpx.Err(w, http.StatusBadRequest, "missing branch/repo")
+		return
+	}
+	out, err := s.Diff(branch, repo, r.URL.Query().Get("is_main") == "true")
+	if err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "git diff failed")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write(out)
+}
+
+func (s *Feature) Diff(branch, repo string, isMain bool) ([]byte, error) {
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	base := services.BaseRef(defBranch(s.cfg(), repo), wt)
+	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", base+"...HEAD")
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > maxDiffBytes {
+		return append(out[:maxDiffBytes], []byte("\n… diff truncated (too large) — open on GitHub for the full view\n")...), nil
+	}
+	return out, nil
+}
+
+type prCacheEntry struct {
+	body []byte
+	at   time.Time
+}
+
+var (
+	prCacheMu sync.Mutex
+	prCache   = map[string]prCacheEntry{}
+)
+
+func (s *Feature) handlePRStatus(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	repo := r.URL.Query().Get("repo")
+	isMain := r.URL.Query().Get("is_main") == "true"
+	if branch == "" || repo == "" {
+		http.Error(w, "missing branch/repo", http.StatusBadRequest)
+		return
+	}
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+
+	key := wt
+	prCacheMu.Lock()
+	if hit, ok := prCache[key]; ok && time.Since(hit.at) < 30*time.Second {
+		body := hit.body
+		prCacheMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+		return
+	}
+	prCacheMu.Unlock()
+
+	if head := services.CurrentBranch(wt); head != "" {
+		if p, ok := prPairFor(repo, wt); ok {
+			warmPRs([]prPair{p})
+		}
+		if pr, known := cachedPR(repo, head); known && pr != nil {
+			body, _ := json.Marshal(map[string]any{"pr": pr})
+			prCacheMu.Lock()
+			prCache[key] = prCacheEntry{body: body, at: time.Now()}
+			prCacheMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+			return
+		}
+	}
+
+	body, _ := json.Marshal(map[string]any{"pr": nil})
+	prCacheMu.Lock()
+	prCache[key] = prCacheEntry{body: body, at: time.Now()}
+	prCacheMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(body)
+}
+
+func (s *Feature) handleRepoCommits(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	repo := r.URL.Query().Get("repo")
+	if branch == "" || repo == "" {
+		httpx.Err(w, http.StatusBadRequest, "missing branch/repo")
+		return
+	}
+	httpx.Write(w, s.RepoCommits(branch, repo, r.URL.Query().Get("base"), r.URL.Query().Get("is_main") == "true"))
+}
+
+func (s *Feature) RepoCommits(branch, repo, baseOverride string, isMain bool) map[string]any {
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	base := services.BaseRef(defBranch(s.cfg(), repo), wt)
+	if baseOverride != "" {
+		base = "origin/" + baseOverride
+	}
+	out, err := services.RunTimeout(6*time.Second, wt, "git", "log",
+		base+"..HEAD", "--format=%h%x1f%s%x1f%an%x1f%cr", "-n", "100")
+	commits := []map[string]string{}
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line == "" {
+				continue
+			}
+			p := strings.SplitN(line, "\x1f", 4)
+			if len(p) == 4 {
+				commits = append(commits, map[string]string{"hash": p[0], "subject": p[1], "author": p[2], "date": p[3]})
+			}
+		}
+	}
+	return map[string]any{"commits": commits}
+}
+
+const (
+	prTTL         = 150 * time.Second
+	prErrCooldown = 30 * time.Second
+)
+
+func (s *Feature) handleAllPRs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(s.AllPRs())
+}
+
+func (s *Feature) AllPRs() []byte {
+	if s.cfg() == nil || s.WorkspaceRoot == "" {
+		return []byte(`{}`)
+	}
+	type repoPR struct {
+		Repo   string          `json:"repo"`
+		Alias  string          `json:"alias"`
+		PR     json.RawMessage `json:"pr"`
+		Behind int             `json:"behind"`
+		Ahead  int             `json:"ahead"`
+	}
+	known := make(map[string]bool, len(s.cfg().Repos))
+	for n := range s.cfg().Repos {
+		known[n] = true
+	}
+	workspaces := scanSkeletons(s.WorkspaceRoot, s.DefaultBranch, known, true)
+
+	var pairs []prPair
+	anyCold := false
+	for _, ws := range workspaces {
+		for _, repo := range ws.Repos {
+			wt := services.RepoWorktreePath(s.WorkspaceRoot, repo.Name, ws.Branch, ws.IsMain)
+			if st, err := os.Stat(wt); err != nil || !st.IsDir() {
+				continue
+			}
+			p, ok := prPairFor(repo.Name, wt)
+			if !ok {
+				continue
+			}
+			pairs = append(pairs, p)
+			if _, known := cachedPR(p.repo, p.head); !known {
+				anyCold = true
+			}
+		}
+	}
+	_ = anyCold
+	go warmPRs(pairs)
+
+	out := map[string][]repoPR{}
+	for _, ws := range workspaces {
+		key := "ws:" + ws.Branch
+		if ws.IsMain {
+			key = "main:" + ws.Branch
+		}
+		var list []repoPR
+		for _, repo := range ws.Repos {
+			dir := s.cfg().Repos[repo.Name]
+			if dir == nil {
+				continue
+			}
+			alias := dir.Alias
+			if alias == "" {
+				alias = repo.Name
+			}
+			wt := services.RepoWorktreePath(s.WorkspaceRoot, repo.Name, ws.Branch, ws.IsMain)
+			if st, err := os.Stat(wt); err != nil || !st.IsDir() {
+				continue
+			}
+			head := services.CurrentBranch(wt)
+			if head == "" {
+				continue
+			}
+			if pr, known := cachedPR(repo.Name, head); known && pr != nil {
+				ahead, behind := services.AheadBehind(defBranch(s.cfg(), repo.Name), wt)
+				list = append(list, repoPR{Repo: repo.Name, Alias: alias, PR: pr, Behind: behind, Ahead: ahead})
+			}
+		}
+		if len(list) > 0 {
+			out[key] = list
+		}
+	}
+	b, _ := json.Marshal(out)
+	return b
+}
+
+func (s *Feature) handleWorkspacePRs(w http.ResponseWriter, r *http.Request) {
+	if s.cfg() == nil {
+		http.Error(w, "no project config", http.StatusServiceUnavailable)
+		return
+	}
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		http.Error(w, "missing branch", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(s.WorkspacePRs(branch, r.URL.Query().Get("is_main") == "true"))
+}
+
+func (s *Feature) WorkspacePRs(branch string, isMain bool) []byte {
+	if s.cfg() == nil {
+		return []byte(`{"prs":[]}`)
+	}
+	type repoPR struct {
+		Repo   string          `json:"repo"`
+		Alias  string          `json:"alias"`
+		PR     json.RawMessage `json:"pr"`
+		Behind int             `json:"behind"`
+		Ahead  int             `json:"ahead"`
+	}
+
+	type item struct {
+		alias string
+		wt    string
+		pair  prPair
+	}
+	var items []item
+	var pairs []prPair
+	for _, name := range s.cfg().RepoOrder {
+		dir, ok := s.cfg().Repos[name]
+		if !ok {
+			continue
+		}
+		alias := dir.Alias
+		if alias == "" {
+			alias = name
+		}
+		wt := services.RepoWorktreePath(s.WorkspaceRoot, name, branch, isMain)
+		if st, err := os.Stat(wt); err != nil || !st.IsDir() {
+			continue
+		}
+		p, ok := prPairFor(name, wt)
+		if !ok {
+			continue
+		}
+		items = append(items, item{alias, wt, p})
+		pairs = append(pairs, p)
+	}
+	warmPRs(pairs)
+
+	var out []repoPR
+	for _, it := range items {
+		if pr, known := cachedPR(it.pair.repo, it.pair.head); known && pr != nil {
+			ahead, behind := services.AheadBehind(defBranch(s.cfg(), it.pair.repo), it.wt)
+			out = append(out, repoPR{Repo: it.pair.repo, Alias: it.alias, PR: pr, Behind: behind, Ahead: ahead})
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"prs": out})
+	return b
+}

@@ -1,0 +1,552 @@
+package ptyhost
+
+import (
+	"bufio"
+	"crypto/sha1"
+	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	gnet "github.com/shirou/gopsutil/v4/net"
+	"github.com/shirou/gopsutil/v4/process"
+)
+
+const (
+	frameInput   = 0x00
+	frameResize  = 0x01
+	framePrimary = 0x02
+)
+
+func ptySockDir() string {
+	if d := os.Getenv("POM_PTY_SOCK_DIR"); d != "" {
+		return d
+	}
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+		return filepath.Join(d, "pom-pty")
+	}
+	return filepath.Join("/tmp", fmt.Sprintf("pom-pty-%d", os.Getuid()))
+}
+
+func SocketPath(name string) string {
+	sum := sha1.Sum([]byte(name))
+	return filepath.Join(ptySockDir(), hex.EncodeToString(sum[:])[:16]+".sock")
+}
+
+func DialWait(path string, d time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(d)
+	for {
+		if c, err := net.Dial("unix", path); err == nil {
+			return c, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout waiting for %s", path)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func pidPath(name string) string {
+	sum := sha1.Sum([]byte(name))
+	return filepath.Join(ptySockDir(), hex.EncodeToString(sum[:])[:16]+".pid")
+}
+
+type Holder struct {
+	Name string
+	PID  int
+}
+
+func writeHolderPID(name string) {
+	_ = os.WriteFile(pidPath(name), []byte(fmt.Sprintf("%d\n%s\n", os.Getpid(), name)), 0o644)
+}
+
+func Holders() []Holder {
+	entries, err := os.ReadDir(ptySockDir())
+	if err != nil {
+		return nil
+	}
+	var out []Holder
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) != ".pid" {
+			continue
+		}
+		full := filepath.Join(ptySockDir(), e.Name())
+		data, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		f := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+		if len(f) != 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(f[0])
+		if err != nil {
+			continue
+		}
+		if !holderAlive(pid) {
+			_ = os.Remove(full)
+			_ = os.Remove(SocketPath(f[1]))
+			continue
+		}
+		out = append(out, Holder{PID: pid, Name: f[1]})
+	}
+	return out
+}
+
+func HolderAlive(name string) bool {
+	pid := HolderPID(name)
+	return pid != 0 && holderAlive(pid)
+}
+
+func holderAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+func KillHolder(name string) error {
+	pid := HolderPID(name)
+	if pid == 0 {
+		return fmt.Errorf("no holder for %q", name)
+	}
+	killProcessTree(pid)
+	_ = os.Remove(crashPath(name))
+	return nil
+}
+
+func killProcessTree(root int) {
+	pids := descendantPIDs(root)
+	signalAll(pids, syscall.SIGTERM)
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if !anyAlive(pids) {
+			return
+		}
+		time.Sleep(80 * time.Millisecond)
+	}
+	signalAll(pids, syscall.SIGKILL)
+}
+
+func descendantPIDs(root int) []int {
+	var out []int
+	seen := map[int]bool{}
+	queue := []int{root}
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		if seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		out = append(out, pid)
+		p, err := process.NewProcess(int32(pid))
+		if err != nil {
+			continue
+		}
+		kids, err := p.Children()
+		if err != nil {
+			continue
+		}
+		for _, k := range kids {
+			queue = append(queue, int(k.Pid))
+		}
+	}
+	return out
+}
+
+func signalAll(pids []int, sig syscall.Signal) {
+	for _, pid := range pids {
+		_ = syscall.Kill(-pid, sig)
+		_ = syscall.Kill(pid, sig)
+	}
+}
+
+func anyAlive(pids []int) bool {
+	for _, pid := range pids {
+		if holderAlive(pid) {
+			return true
+		}
+	}
+	return false
+}
+
+func ListeningPortInTree(name string, lo, hi int) int {
+	pid := HolderPID(name)
+	if pid == 0 {
+		return 0
+	}
+	for _, p := range descendantPIDs(pid) {
+		proc, err := process.NewProcess(int32(p))
+		if err != nil {
+			continue
+		}
+		conns, err := proc.Connections()
+		if err != nil {
+			continue
+		}
+		for _, c := range conns {
+			if c.Status == "LISTEN" && int(c.Laddr.Port) >= lo && int(c.Laddr.Port) <= hi {
+				return int(c.Laddr.Port)
+			}
+		}
+	}
+	return 0
+}
+
+func ReapOrphanServices(scope string) []int {
+	var victims []int
+	seen := map[int]bool{}
+	add := func(pid int) {
+		if pid > 1 && !seen[pid] {
+			seen[pid] = true
+			victims = append(victims, pid)
+		}
+	}
+
+	if all, err := process.Processes(); err == nil {
+		byName := map[string][]int{}
+		for _, p := range all {
+			cmd, _ := p.Cmdline()
+			if name := holderNameFromCmd(cmd); name != "" {
+				byName[name] = append(byName[name], int(p.Pid))
+			}
+		}
+		for name, pids := range byName {
+			if len(pids) < 2 {
+				continue
+			}
+			keep := HolderPID(name)
+			found := false
+			for _, pid := range pids {
+				if pid == keep {
+					found = true
+				}
+			}
+			if !found {
+				keep = pids[0]
+				for _, pid := range pids {
+					if pid > keep {
+						keep = pid
+					}
+				}
+			}
+			for _, pid := range pids {
+				if pid != keep {
+					add(pid)
+				}
+			}
+		}
+	}
+
+	owned := ownedPIDs()
+	const lo, hi = 10000, 65535
+	if conns, err := gnet.Connections("tcp"); err == nil {
+		for _, c := range conns {
+			pid := int(c.Pid)
+			if c.Status != "LISTEN" || pid <= 1 || owned[pid] {
+				continue
+			}
+			if c.Laddr.Port < lo || c.Laddr.Port > hi {
+				continue
+			}
+			if p, err := process.NewProcess(int32(pid)); err == nil {
+				if cmd, _ := p.Cmdline(); looksLikeServiceRuntime(cmd) {
+					add(pid)
+				}
+			}
+		}
+	}
+
+	if len(victims) == 0 {
+		return nil
+	}
+	all := map[int]bool{}
+	for _, v := range victims {
+		for _, d := range descendantPIDs(v) {
+			all[d] = true
+		}
+	}
+	pids := make([]int, 0, len(all))
+	for p := range all {
+		pids = append(pids, p)
+	}
+	signalAll(pids, syscall.SIGTERM)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && anyAlive(pids) {
+		time.Sleep(80 * time.Millisecond)
+	}
+	signalAll(pids, syscall.SIGKILL)
+	return victims
+}
+
+func holderNameFromCmd(cmd string) string {
+	f := strings.Fields(cmd)
+	for i := 0; i+2 < len(f); i++ {
+		if f[i] == "pty" && f[i+1] == "run" {
+			return f[i+2]
+		}
+	}
+	return ""
+}
+
+func ownedPIDs() map[int]bool {
+	set := map[int]bool{}
+	all, err := process.Processes()
+	if err != nil {
+		return set
+	}
+	for _, p := range all {
+		cmd, _ := p.Cmdline()
+		if holderNameFromCmd(cmd) == "" {
+			continue
+		}
+		for _, d := range descendantPIDs(int(p.Pid)) {
+			set[d] = true
+		}
+	}
+	return set
+}
+
+func looksLikeServiceRuntime(cmd string) bool {
+	for _, pat := range []string{
+		"serve -s", "vite", "next dev", "next start", "node dist/",
+		"puma", "sidekiq", "rails server", "watchexec", "prisma", "nest ",
+	} {
+		if strings.Contains(cmd, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+func HolderPID(name string) int {
+	data, err := os.ReadFile(pidPath(name))
+	if err != nil {
+		return 0
+	}
+	f := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+	pid, _ := strconv.Atoi(f[0])
+	return pid
+}
+
+func Snapshot(name string, timeout time.Duration) []byte {
+	c, err := net.Dial("unix", SocketPath(name))
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(timeout))
+	var buf []byte
+	tmp := make([]byte, 32*1024)
+	for len(buf) < ringCap {
+		n, err := c.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			break
+		}
+	}
+	return buf
+}
+
+func Serve(ln net.Listener, o StartOpts) (*Session, error) {
+	s, err := Start(o)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveConn(s, conn)
+		}
+	}()
+	go func() { <-s.Done(); _ = ln.Close() }()
+	return s, nil
+}
+
+func ListenAndServe(name string, o StartOpts) (*Session, net.Listener, error) {
+	path := SocketPath(name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, nil, err
+	}
+	_ = os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, nil, err
+	}
+	o.OnExit = func(scrollback []byte, exitErr error) { writeCrashLog(name, scrollback, exitErr) }
+	s, err := Serve(ln, o)
+	if err != nil {
+		_ = ln.Close()
+		_ = os.Remove(path)
+		return nil, nil, err
+	}
+	writeHolderPID(name)
+	go func() {
+		<-s.Done()
+		_ = os.Remove(path)
+		_ = os.Remove(pidPath(name))
+	}()
+	return s, ln, nil
+}
+
+func crashPath(name string) string {
+	sum := sha1.Sum([]byte(name))
+	return filepath.Join(ptySockDir(), hex.EncodeToString(sum[:])[:16]+".crash")
+}
+
+func exitedAbnormally(exitErr error) bool {
+	return exitErr != nil && !strings.Contains(exitErr.Error(), "signal: terminated")
+}
+
+func writeCrashLog(name string, scrollback []byte, exitErr error) {
+	kind, status := "STOP", "exited cleanly"
+	if exitErr != nil {
+		status = "exited: " + exitErr.Error()
+	}
+	if exitedAbnormally(exitErr) {
+		kind = "CRASH"
+	}
+	hdr := fmt.Sprintf("%s\t%s · %s\n", kind, name, status)
+	_ = os.WriteFile(crashPath(name), append([]byte(hdr), scrollback...), 0o644)
+}
+
+func CrashInfo(name string) (crashed bool, output []byte) {
+	data, err := os.ReadFile(crashPath(name))
+	if err != nil || len(data) == 0 {
+		return false, nil
+	}
+	nl := indexByte(data, '\n')
+	if nl < 0 {
+		return false, data
+	}
+	return strings.HasPrefix(string(data[:nl]), "CRASH"), data[nl+1:]
+}
+
+func serveConn(s *Session, conn net.Conn) {
+	defer conn.Close()
+	snap, out, cancel := s.Subscribe()
+	defer cancel()
+
+	clientID := s.AddClient()
+	defer s.RemoveClient(clientID)
+
+	if _, err := conn.Write(snap); err != nil {
+		return
+	}
+
+	go func() {
+		r := bufio.NewReader(conn)
+		hdr := make([]byte, 3)
+		for {
+			if _, err := io.ReadFull(r, hdr); err != nil {
+				return
+			}
+			n := int(binary.BigEndian.Uint16(hdr[1:3]))
+			payload := make([]byte, n)
+			if _, err := io.ReadFull(r, payload); err != nil {
+				return
+			}
+			switch hdr[0] {
+			case frameInput:
+				_, _ = s.Write(payload)
+			case frameResize:
+				if len(payload) == 4 {
+					s.ClientSize(clientID, int(binary.BigEndian.Uint16(payload[0:2])),
+						int(binary.BigEndian.Uint16(payload[2:4])))
+				}
+			case framePrimary:
+				s.SetClientPrimary(clientID)
+			}
+		}
+	}()
+
+	for chunk := range out {
+		if _, err := conn.Write(chunk); err != nil {
+			return
+		}
+	}
+}
+
+func writeFrame(w io.Writer, typ byte, payload []byte) error {
+	hdr := make([]byte, 3)
+	hdr[0] = typ
+	binary.BigEndian.PutUint16(hdr[1:3], uint16(len(payload)))
+	if _, err := w.Write(hdr); err != nil {
+		return err
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
+func WriteInput(w io.Writer, p []byte) error { return writeFrame(w, frameInput, p) }
+
+func WritePrimary(w io.Writer) error { return writeFrame(w, framePrimary, nil) }
+func WriteResize(w io.Writer, cols, rows int) error {
+	p := make([]byte, 4)
+	binary.BigEndian.PutUint16(p[0:2], uint16(cols))
+	binary.BigEndian.PutUint16(p[2:4], uint16(rows))
+	return writeFrame(w, frameResize, p)
+}
+
+func Attach(conn net.Conn, in io.Reader, out io.Writer, resize <-chan [2]int, detach byte) error {
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := io.Copy(out, conn)
+		done <- err
+	}()
+	go func() {
+		for sz := range resize {
+			if WriteResize(conn, sz[0], sz[1]) != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := in.Read(buf)
+			if n > 0 {
+				if i := indexByte(buf[:n], detach); i >= 0 {
+					if i > 0 {
+						_ = WriteInput(conn, buf[:i])
+					}
+					done <- nil
+					return
+				}
+				if WriteInput(conn, buf[:n]) != nil {
+					return
+				}
+			}
+			if err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+
+	return <-done
+}
+
+func indexByte(b []byte, c byte) int {
+	for i := range b {
+		if b[i] == c {
+			return i
+		}
+	}
+	return -1
+}

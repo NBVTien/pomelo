@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Build the Pomelo native app: Go core → c-archive → Xcode build (SwiftPM package).
+# Xcode (not `swift build`) because CodeEditSourceEditor pulls a sub-dep whose asset
+# catalog only builds under Xcode's resource pipeline.
+# Usage: ./build.sh [run|selftest|selftest-pty]
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
+export PRODUCTS="$here/.ddata/Build/Products/Debug"
+
+echo "==> Building Go core (libpom.a, lean: -tags nostatic)"
+GOTOOLCHAIN=local CGO_ENABLED=1 go build -C "$repo" \
+    -tags nostatic -trimpath -ldflags="-s -w" \
+    -buildmode=c-archive -o "$here/Vendor/libpom.a" ./cmd/libpom/
+cp "$here/Vendor/libpom.h" "$here/Sources/CPom/include/libpom.h"
+
+echo "==> xcodebuild"
+cd "$here"
+# SwiftPM doesn't track the prebuilt libpom.a as an input, so a Go-only change
+# won't relink. Force it by removing the linked binary.
+rm -f "$PRODUCTS/PomeloApp" 2>/dev/null || true
+xcodebuild -scheme PomeloApp -configuration Debug \
+    -destination 'platform=macOS,arch=arm64' \
+    -derivedDataPath "$here/.ddata" \
+    -skipPackagePluginValidation \
+    build 2>&1 | grep -vE "was built for newer|ld: warning:|LLVM Profile Error" || true
+
+test -x "$PRODUCTS/PomeloApp" || { echo "build failed: no PomeloApp binary"; exit 1; }
+echo "Build complete!"
+
+case "${1:-}" in
+    run)          exec "$PRODUCTS/PomeloApp" ;;
+    selftest)     exec "$PRODUCTS/PomeloApp" --selftest ;;
+    selftest-pty) exec "$PRODUCTS/PomeloApp" --selftest-pty ;;
+esac

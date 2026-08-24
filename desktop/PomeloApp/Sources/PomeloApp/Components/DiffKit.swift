@@ -1,0 +1,473 @@
+import SwiftUI
+
+
+struct DiffLine: Identifiable, Sendable {
+    enum Kind: Sendable { case context, add, del, hunk }
+    let id: Int
+    let kind: Kind
+    let oldN: Int?
+    let newN: Int?
+    let text: String
+}
+
+struct DiffFile: Identifiable, Sendable {
+    var path: String
+    var oldPath: String?
+    var status: String
+    var adds: Int = 0
+    var dels: Int = 0
+    var binary = false
+    var lines: [DiffLine] = []
+    var id: String { path }
+}
+
+enum DiffParser {
+    static func parse(_ text: String) -> [DiffFile] {
+        var files: [DiffFile] = []
+        var cur: DiffFile?
+        var oldN = 0, newN = 0
+        var lid = 0
+        let flush = { if let c = cur { files.append(c) }; cur = nil }
+
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            if raw.hasPrefix("diff --git ") {
+                flush()
+                let parts = raw.dropFirst("diff --git ".count).split(separator: " ")
+                var p = ""
+                if parts.count == 2 { p = String(parts[1].dropFirst(2)) }
+                cur = DiffFile(path: p, status: "M")
+                oldN = 0; newN = 0
+                continue
+            }
+            guard cur != nil else { continue }
+            if raw.hasPrefix("new file") { cur?.status = "A"; continue }
+            if raw.hasPrefix("deleted file") { cur?.status = "D"; continue }
+            if raw.hasPrefix("rename from ") { cur?.oldPath = String(raw.dropFirst("rename from ".count)); cur?.status = "R"; continue }
+            if raw.hasPrefix("rename to ") { cur?.path = String(raw.dropFirst("rename to ".count)); continue }
+            if raw.hasPrefix("Binary files") { cur?.binary = true; continue }
+            if raw.hasPrefix("--- ") { continue }
+            if raw.hasPrefix("+++ ") {
+                let p = String(raw.dropFirst(4))
+                if p != "/dev/null" { cur?.path = p.hasPrefix("b/") ? String(p.dropFirst(2)) : p }
+                continue
+            }
+            if raw.hasPrefix("index ") || raw.hasPrefix("similarity ") || raw.hasPrefix("\\ ") { continue }
+            if raw.hasPrefix("@@") {
+                (oldN, newN) = hunkStart(raw)
+                lid += 1
+                cur?.lines.append(DiffLine(id: lid, kind: .hunk, oldN: nil, newN: nil, text: raw))
+                continue
+            }
+            let first = raw.first
+            lid += 1
+            switch first {
+            case "+":
+                cur?.lines.append(DiffLine(id: lid, kind: .add, oldN: nil, newN: newN, text: String(raw.dropFirst())))
+                cur?.adds += 1; newN += 1
+            case "-":
+                cur?.lines.append(DiffLine(id: lid, kind: .del, oldN: oldN, newN: nil, text: String(raw.dropFirst())))
+                cur?.dels += 1; oldN += 1
+            default:
+                let t = raw.hasPrefix(" ") ? String(raw.dropFirst()) : raw
+                cur?.lines.append(DiffLine(id: lid, kind: .context, oldN: oldN, newN: newN, text: t))
+                oldN += 1; newN += 1
+            }
+        }
+        flush()
+        return files
+    }
+
+    private static func hunkStart(_ s: String) -> (Int, Int) {
+        var old = 0, new = 0
+        let body = s.dropFirst(2)
+        for tok in body.split(separator: " ") {
+            if tok.hasPrefix("-") { old = Int(tok.dropFirst().split(separator: ",").first ?? "0") ?? 0 }
+            if tok.hasPrefix("+") { new = Int(tok.dropFirst().split(separator: ",").first ?? "0") ?? 0; break }
+        }
+        return (old, new)
+    }
+}
+
+struct DiffFileList: View {
+    @EnvironmentObject var theme: ThemeManager
+    let files: [DiffFile]
+    @Binding var selected: String?
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 1) {
+                ForEach(files) { f in
+                    Button { selected = f.path } label: {
+                        HStack(spacing: 7) {
+                            Text(f.status).font(Theme.mono(9.5, .bold)).foregroundStyle(statusColor(f.status))
+                                .frame(width: 12)
+                            Text(fileName(f.path)).font(.system(size: 11.5)).foregroundStyle(Theme.fg).lineLimit(1)
+                            Spacer(minLength: 4)
+                            if f.adds > 0 { Text("+\(f.adds)").font(Theme.mono(9.5)).foregroundStyle(Theme.ok) }
+                            if f.dels > 0 { Text("-\(f.dels)").font(Theme.mono(9.5)).foregroundStyle(Theme.danger) }
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(selected == f.path ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
+                        .help(f.path)
+                    }.buttonStyle(.plain)
+                }
+            }.padding(6)
+        }
+    }
+    private func fileName(_ p: String) -> String { p.split(separator: "/").last.map(String.init) ?? p }
+    private func statusColor(_ s: String) -> Color {
+        switch s { case "A": return Theme.ok; case "D": return Theme.danger; case "R": return Theme.accent; default: return Theme.warn }
+    }
+}
+
+struct SplitRow: Identifiable, Sendable {
+    let id: Int
+    var hunk: String? = nil
+    var leftN: Int? = nil;  var left: String? = nil;  var leftHi: Range<Int>? = nil;  var leftSpans: [SynSpan] = []
+    var rightN: Int? = nil; var right: String? = nil; var rightHi: Range<Int>? = nil; var rightSpans: [SynSpan] = []
+    var changed = false
+}
+
+private func middleDiff(_ a: String, _ b: String) -> (Range<Int>, Range<Int>) {
+    let ac = Array(a), bc = Array(b)
+    var p = 0
+    while p < ac.count && p < bc.count && ac[p] == bc[p] { p += 1 }
+    var s = 0
+    while s < ac.count - p && s < bc.count - p && ac[ac.count - 1 - s] == bc[bc.count - 1 - s] { s += 1 }
+    return (p..<(ac.count - s), p..<(bc.count - s))
+}
+
+func splitRows(_ file: DiffFile) -> [SplitRow] {
+    var rows: [SplitRow] = []
+    var dels: [DiffLine] = [], adds: [DiffLine] = []
+    var rid = 0
+    func flush() {
+        let n = max(dels.count, adds.count)
+        for i in 0..<n {
+            rid += 1
+            let d = i < dels.count ? dels[i] : nil
+            let a = i < adds.count ? adds[i] : nil
+            var lHi: Range<Int>?, rHi: Range<Int>?
+            if let d, let a, d.text != a.text, d.text.count < 400, a.text.count < 400 {
+                (lHi, rHi) = middleDiff(d.text, a.text)
+            }
+            rows.append(SplitRow(id: rid, leftN: d?.oldN, left: d?.text, leftHi: lHi, leftSpans: d.map { Syntax.spans($0.text) } ?? [],
+                                 rightN: a?.newN, right: a?.text, rightHi: rHi, rightSpans: a.map { Syntax.spans($0.text) } ?? [], changed: true))
+        }
+        dels.removeAll(); adds.removeAll()
+    }
+    for l in file.lines {
+        switch l.kind {
+        case .hunk:    flush(); rid += 1; rows.append(SplitRow(id: rid, hunk: l.text))
+        case .del:     dels.append(l)
+        case .add:     adds.append(l)
+        case .context:
+            flush(); rid += 1
+            let sp = Syntax.spans(l.text)
+            rows.append(SplitRow(id: rid, leftN: l.oldN, left: l.text, leftSpans: sp, rightN: l.newN, right: l.text, rightSpans: sp))
+        }
+    }
+    flush()
+    return rows
+}
+
+struct DiffFileView: View {
+    @EnvironmentObject var theme: ThemeManager
+    let file: DiffFile
+    @State private var rows: [SplitRow] = []
+    private let rowH: CGFloat = 17
+
+    var body: some View {
+        Group {
+            if file.binary {
+                Text("Binary file — no textual diff").font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                GeometryReader { geo in
+                    let sideW = max(160, (geo.size.width - 1) / 2)
+                    ScrollView(.vertical) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(rows) { row($0, sideW: sideW) }
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: file.path) {
+            let f = file
+            rows = await Task.detached(priority: .userInitiated) { splitRows(f) }.value
+        }
+    }
+
+    @ViewBuilder private func row(_ r: SplitRow, sideW: CGFloat) -> some View {
+        if let h = r.hunk {
+            Text(h).font(Theme.mono(10)).foregroundStyle(Theme.accent).lineLimit(1)
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, minHeight: rowH, alignment: .leading)
+                .background(Theme.accent.opacity(0.08))
+        } else {
+            HStack(spacing: 0) {
+                side(num: r.leftN, text: r.left, hi: r.leftHi, spans: r.leftSpans, w: sideW, tint: r.changed ? Theme.danger : nil)
+                Rectangle().fill(Theme.borderSoft).frame(width: 1, height: rowH)
+                side(num: r.rightN, text: r.right, hi: r.rightHi, spans: r.rightSpans, w: sideW, tint: r.changed ? Theme.ok : nil)
+            }
+            .frame(height: rowH)
+        }
+    }
+
+    private func side(num: Int?, text: String?, hi: Range<Int>?, spans: [SynSpan], w: CGFloat, tint: Color?) -> some View {
+        HStack(spacing: 0) {
+            Text(num.map(String.init) ?? "").font(Theme.mono(9.5)).foregroundStyle(Theme.dim)
+                .frame(width: 38, alignment: .trailing).padding(.trailing, 6)
+            code(text, hi: hi, spans: spans, tint: tint)
+                .lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 4)
+        }
+        .frame(width: w, height: rowH, alignment: .leading)
+        .background(text == nil ? Theme.dim.opacity(0.05) : (tint?.opacity(0.12) ?? .clear))
+    }
+
+    private func synColor(_ k: SynKind) -> Color {
+        switch k {
+        case .keyword: return Theme.accent
+        case .string:  return Theme.ok
+        case .number:  return Theme.warn
+        case .comment: return Theme.dim
+        case .plain:   return Theme.fgSoft
+        }
+    }
+
+    private func code(_ text: String?, hi: Range<Int>?, spans: [SynSpan], tint: Color?) -> Text {
+        guard let text, !text.isEmpty else { return Text(" ").font(Theme.mono(11)) }
+        var a = AttributedString(text)
+        a.foregroundColor = Theme.fgSoft
+        let n = text.count
+        func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
+        for sp in spans where sp.kind != .plain {
+            a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = synColor(sp.kind)
+        }
+        if let hi, let tint, !hi.isEmpty {
+            a[idx(hi.lowerBound)..<idx(hi.upperBound)].backgroundColor = tint.opacity(0.35)
+        }
+        return Text(a).font(Theme.mono(11))
+    }
+}
+
+struct UnifiedRow: Identifiable, Sendable {
+    let id: Int
+    var hunk: String? = nil
+    var oldN: Int? = nil
+    var newN: Int? = nil
+    var kind: DiffLine.Kind = .context
+    var text: String = ""
+    var spans: [SynSpan] = []
+}
+
+func unifiedRows(_ file: DiffFile) -> [UnifiedRow] {
+    file.lines.map { l in
+        UnifiedRow(id: l.id, hunk: l.kind == .hunk ? l.text : nil,
+                   oldN: l.oldN, newN: l.newN, kind: l.kind, text: l.text,
+                   spans: l.kind == .hunk ? [] : Syntax.spans(l.text))
+    }
+}
+
+struct DiffUnifiedView: View {
+    @EnvironmentObject var theme: ThemeManager
+    let file: DiffFile
+    @State private var rows: [UnifiedRow] = []
+    private let rowH: CGFloat = 17
+
+    var body: some View {
+        Group {
+            if file.binary {
+                Text("Binary file — no textual diff").font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(rows) { row($0) }
+                    }
+                }
+            }
+        }
+        .task(id: file.path) {
+            let f = file
+            rows = await Task.detached(priority: .userInitiated) { unifiedRows(f) }.value
+        }
+    }
+
+    @ViewBuilder private func row(_ r: UnifiedRow) -> some View {
+        if let h = r.hunk {
+            Text(h).font(Theme.mono(10)).foregroundStyle(Theme.accent).lineLimit(1)
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, minHeight: rowH, alignment: .leading)
+                .background(Theme.accent.opacity(0.08))
+        } else {
+            HStack(spacing: 0) {
+                gutter(r.oldN); gutter(r.newN)
+                Text(r.kind == .add ? "+" : r.kind == .del ? "-" : " ")
+                    .font(Theme.mono(11)).foregroundStyle(r.kind == .add ? Theme.ok : r.kind == .del ? Theme.danger : Theme.dim)
+                    .frame(width: 14, alignment: .center)
+                code(r.text, spans: r.spans)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 2)
+            }
+            .frame(height: rowH)
+            .background(r.kind == .add ? Theme.ok.opacity(0.10) : r.kind == .del ? Theme.danger.opacity(0.10) : .clear)
+        }
+    }
+
+    private func gutter(_ n: Int?) -> some View {
+        Text(n.map(String.init) ?? "").font(Theme.mono(9.5)).foregroundStyle(Theme.dim)
+            .frame(width: 40, alignment: .trailing).padding(.trailing, 6)
+    }
+
+    private func code(_ text: String, spans: [SynSpan]) -> Text {
+        guard !text.isEmpty else { return Text(" ").font(Theme.mono(11)) }
+        var a = AttributedString(text)
+        a.foregroundColor = Theme.fgSoft
+        let n = text.count
+        func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
+        for sp in spans where sp.kind != .plain {
+            let c: Color = sp.kind == .keyword ? Theme.accent : sp.kind == .string ? Theme.ok : sp.kind == .number ? Theme.warn : Theme.dim
+            a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = c
+        }
+        return Text(a).font(Theme.mono(11))
+    }
+}
+
+
+import AppKit
+
+struct NativeDiffView: NSViewRepresentable {
+    let file: DiffFile
+    var isDark: Bool
+
+    func makeCoordinator() -> Coord { Coord() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let tv = DiffTextView()
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.isRichText = false
+        tv.drawsBackground = false
+        tv.textContainerInset = NSSize(width: 0, height: 6)
+        tv.isHorizontallyResizable = true
+        tv.textContainer?.widthTracksTextView = false
+        tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.autoresizingMask = [.width, .height]
+        context.coordinator.textView = tv
+
+        let scroll = NSScrollView()
+        scroll.documentView = tv
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.drawsBackground = false
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        scroll.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        guard let tv = context.coordinator.textView else { return }
+        if context.coordinator.path == file.path { return }
+        context.coordinator.path = file.path
+        let built = DiffTextView.build(file)
+        tv.lineKinds = built.kinds
+        tv.lineStarts = built.starts
+        tv.textStorage?.setAttributedString(built.string)
+    }
+
+    final class Coord { var textView: DiffTextView?; var path = "" }
+}
+
+final class DiffTextView: NSTextView {
+    var lineKinds: [DiffLine.Kind] = []
+    var lineStarts: [Int] = []
+
+    private static let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    private static func synColor(_ k: SynKind) -> NSColor {
+        switch k {
+        case .keyword: return .systemPurple
+        case .string:  return .systemTeal
+        case .number:  return .systemOrange
+        case .comment: return .tertiaryLabelColor
+        case .plain:   return .labelColor
+        }
+    }
+    private static func gutter(_ n: Int?) -> String {
+        let s = n.map(String.init) ?? ""
+        return String(repeating: " ", count: max(0, 5 - s.count)) + s
+    }
+
+    static func build(_ file: DiffFile) -> (string: NSAttributedString, kinds: [DiffLine.Kind], starts: [Int]) {
+        let out = NSMutableAttributedString()
+        var kinds: [DiffLine.Kind] = []
+        var starts: [Int] = []
+        let dim = NSColor.tertiaryLabelColor, code = NSColor.labelColor
+        let addC = NSColor.systemGreen, delC = NSColor.systemRed, hunkC = NSColor.systemPurple
+
+        func append(_ s: String, _ color: NSColor) {
+            out.append(NSAttributedString(string: s, attributes: [.font: mono, .foregroundColor: color]))
+        }
+        func appendCode(_ text: String) {
+            let a = NSMutableAttributedString(string: text + "\n", attributes: [.font: mono, .foregroundColor: code])
+            for sp in Syntax.spans(text) where sp.kind != .plain {
+                guard let lo = text.index(text.startIndex, offsetBy: sp.lo, limitedBy: text.endIndex),
+                      let hi = text.index(text.startIndex, offsetBy: sp.hi, limitedBy: text.endIndex), lo < hi else { continue }
+                a.addAttribute(.foregroundColor, value: synColor(sp.kind), range: NSRange(lo..<hi, in: text))
+            }
+            out.append(a)
+        }
+        for l in file.lines {
+            starts.append(out.length)
+            kinds.append(l.kind)
+            if l.kind == .hunk {
+                append(l.text + "\n", hunkC)
+                continue
+            }
+            append(gutter(l.oldN) + " " + gutter(l.newN) + " ", dim)
+            let sign = l.kind == .add ? "+" : l.kind == .del ? "-" : " "
+            append(sign + " ", l.kind == .add ? addC : l.kind == .del ? delC : dim)
+            appendCode(l.text)
+        }
+        return (out, kinds, starts)
+    }
+
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard let lm = layoutManager, let tc = textContainer, !lineStarts.isEmpty else { return }
+        let addBg = NSColor.systemGreen.withAlphaComponent(0.12)
+        let delBg = NSColor.systemRed.withAlphaComponent(0.12)
+        let hunkBg = NSColor.systemPurple.withAlphaComponent(0.08)
+        let inset = textContainerInset
+        let glyphRange = lm.glyphRange(forBoundingRect: rect, in: tc)
+        lm.enumerateLineFragments(forGlyphRange: glyphRange) { _, used, _, glyphR, _ in
+            let charIdx = lm.characterIndexForGlyph(at: glyphR.location)
+            let line = self.lineIndex(forChar: charIdx)
+            guard line < self.lineKinds.count else { return }
+            let color: NSColor?
+            switch self.lineKinds[line] {
+            case .add: color = addBg
+            case .del: color = delBg
+            case .hunk: color = hunkBg
+            case .context: color = nil
+            }
+            guard let color else { return }
+            color.setFill()
+            let r = NSRect(x: 0, y: used.origin.y + inset.height,
+                           width: self.bounds.width, height: used.height)
+            r.fill()
+        }
+    }
+
+    private func lineIndex(forChar c: Int) -> Int {
+        var lo = 0, hi = lineStarts.count - 1, ans = 0
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if lineStarts[mid] <= c { ans = mid; lo = mid + 1 } else { hi = mid - 1 }
+        }
+        return ans
+    }
+}

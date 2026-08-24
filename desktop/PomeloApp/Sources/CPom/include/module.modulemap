@@ -1,0 +1,4 @@
+module CPom {
+    header "libpom.h"
+    export *
+}
