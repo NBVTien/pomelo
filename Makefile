@@ -84,7 +84,10 @@ _release: version-check
 	git tag v$(NEW_VERSION)
 	git push origin main v$(NEW_VERSION)
 	@echo ""
-	@echo "v$(NEW_VERSION) tagged & pushed. Publish the native app: make app-publish"
+	@echo "v$(NEW_VERSION) tagged & pushed. GitHub Actions (release.yml) now builds"
+	@echo "and publishes the notarized DMG + appcast to the release. Watch:"
+	@echo "  gh run watch --repo pomelohq/pomelo"
+	@echo "(Local fallback without CI: make app-publish)"
 
 # --- Native macOS app (.app → signed + notarized DMG) ---
 # make dmg            -> build + sign + notarize + staple -> desktop/PomeloApp/dist/Pomelo-<v>.dmg

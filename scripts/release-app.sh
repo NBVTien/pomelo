@@ -64,16 +64,4 @@ if ! gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes "$NOTES" "${
   gh release upload "$TAG" --repo "$REPO" --clobber "${ASSETS[@]}"
 fi
 
-# Bridge feed: installs from before the no-cache SUFeedURL switch (≤0.10.7) read
-# appcast.xml off pomelo-releases main, so keep it current there too. Harmless
-# once every install is on the release-asset URL. SSH clone (gh's https helper
-# serves the wrong account's token → push 403s).
-TAP=$(mktemp -d)/pomelo-releases
-if git clone -q git@github.com:pomelohq/pomelo.git "$TAP" 2>/dev/null; then
-  cp "$DIST/appcast.xml" "$TAP/appcast.xml"
-  if ! git -C "$TAP" diff --quiet; then
-    git -C "$TAP" commit -qam "appcast: $TAG (bridge feed for old installs)" && git -C "$TAP" push -q origin HEAD
-    echo ">> updated bridge appcast on main to $TAG"
-  fi
-fi
 echo ">> done: native app $TAG published to $REPO"

@@ -23,27 +23,35 @@ guards against drift:
 - `cmd/pom/root.go` `const version`
 - `cmd/libpom/libpom.go` `const appVersion` — drives the DMG name + Sparkle appcast.
 
-## Steps
+## Steps (CI — the default)
 
 1. Land your changes on `main` (green: `go build ./... && go vet ./... && go test ./...`;
    app touched → `swift build && swift test` in `desktop/PomeloApp`).
-2. **Bump + tag + push:** `make patch` (or `minor` / `major`). Bumps both consts,
-   commits `release: v<x>`, tags `v<x>`, pushes to `main`.
-3. **Publish the native app:** `make app-publish` — builds the notarized DMG,
-   writes the Sparkle appcast, and creates the `pomelo-releases` GitHub release with
-   `Pomelo-<x>.dmg` + `appcast.xml` + `checksums.txt`. Switches gh accounts around
-   the release and keeps old releases.
+2. **One command:** `make patch` (or `minor` / `major`). Bumps both consts, commits
+   `release: v<x>`, tags `v<x>`, pushes to `main`.
+3. That's it — pushing the tag triggers **`.github/workflows/release.yml`** on a
+   GitHub-hosted macOS runner: build → sign → notarize → DMG → Sparkle appcast →
+   publish the `pomelohq/pomelo` GitHub Release with `Pomelo-<x>.dmg` +
+   `appcast.xml` + `checksums.txt`. Watch it: `gh run watch --repo pomelohq/pomelo`.
 4. Bump the docs landing version in `pomelo-docs` (`.vitepress/theme/PomHome.vue`
    eyebrow), `npm run build`, push.
 
-Dry run: `make app-publish DRY_RUN=1` builds the DMG without creating a release.
+CI needs these repo secrets (Settings ▸ Secrets ▸ Actions): `MACOS_CERT_P12`
+(base64 .p12), `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY`, `KEYCHAIN_PASSWORD`,
+`NOTARY_APPLE_ID`, `NOTARY_APP_PASSWORD`, `NOTARY_TEAM_ID`, `SPARKLE_ED_PRIVATE_KEY`.
+
+## Local fallback (no CI)
+
+`make app-publish` runs the same `package.sh` on your Mac (uses the local
+`pomelo-notary` keychain profile + the keychain EdDSA key) and publishes to
+`pomelohq/pomelo` via `gh`. `make app-publish DRY_RUN=1` builds the DMG without
+publishing.
 
 ## Rules
 
 - Never delete old GitHub releases — keep the full history.
-- Auto-update feed (0.10.8+) is `…/releases/latest/download/appcast.xml` (302,
-  no-cache); the `latest` release must carry the `appcast.xml` asset. Older installs
-  (≤0.10.7) read `appcast.xml` off `pomelo-releases` main — `release-app.sh` keeps
-  both in sync so stragglers can still hop forward.
-- The Sparkle EdDSA private key lives in the macOS keychain — do not lose it;
-  without it `sign_update` can't sign the DMG and auto-update breaks.
+- Auto-update feed is `…/releases/latest/download/appcast.xml` (302, no-cache) on
+  `pomelohq/pomelo`; the `latest` release must carry the `appcast.xml` asset.
+- The Sparkle EdDSA private key: locally in the macOS keychain, in CI as the
+  `SPARKLE_ED_PRIVATE_KEY` secret — do not lose it; without it `sign_update` can't
+  sign the DMG and auto-update breaks.
