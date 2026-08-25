@@ -6,9 +6,16 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-26
+
 ### Added
 - Optimistic, animated start/stop for a repo's services — cards flip to an
   immediate starting…/stopping… state and animate between states. (#20)
+
+### Changed
+- Create workspace: the sprint picker uses a themed dropdown, and the ticket
+  suggestions render as a solid card with hover, close on pick, and no longer
+  overlap the hint. (#21)
 
 ### Fixed
 - A stopped service could keep showing "running" after the OS recycled the dead
