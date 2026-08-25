@@ -12,7 +12,7 @@ import (
 	"github.com/pomelohq/pomelo/internal/services"
 )
 
-const version = "0.1.5"
+const version = "0.1.6"
 
 var (
 	appConfig  *config.Config
