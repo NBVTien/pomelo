@@ -6,17 +6,18 @@ import ServiceManagement
 enum SettingsGroup { case app, project }
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, shortcuts, network, diagnostics, integrations
+    case general, notifications, shortcuts, network, diagnostics, integrations
     var id: String { rawValue }
     var group: SettingsGroup {
         switch self {
-        case .general, .shortcuts, .network, .diagnostics: return .app
+        case .general, .notifications, .shortcuts, .network, .diagnostics: return .app
         case .integrations: return .project
         }
     }
     var title: String {
         switch self {
         case .general: return "General"
+        case .notifications: return "Notifications"
         case .shortcuts: return "Shortcuts"
         case .network: return "Network"
         case .diagnostics: return "Diagnostics"
@@ -26,6 +27,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
+        case .notifications: return "bell"
         case .shortcuts: return "keyboard"
         case .network: return "network"
         case .diagnostics: return "ladybug"
@@ -92,6 +94,7 @@ struct SettingsView: View {
                 .padding(.horizontal, 24).frame(height: 44)
             switch section {
             case .general: GeneralSettings()
+            case .notifications: NotificationsSettings()
             case .shortcuts: ShortcutsSettings()
             case .network: NetworkSettings()
             case .diagnostics: DiagnosticsSettings()
@@ -110,12 +113,6 @@ private struct GeneralSettings: View {
     @State private var releasesURL = "https://github.com/pomelohq/pomelo/releases/latest"
     @State private var autoCheck = AppUpdater.shared.automaticChecks
     @State private var startAtLogin = SMAppService.mainApp.status == .enabled
-    @State private var notifOK = true
-
-    private func recheckNotif() {
-        Notifier.currentlyAuthorized { notifOK = $0 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { Notifier.currentlyAuthorized { notifOK = $0 } }
-    }
 
     private func setLoginItem(_ on: Bool) {
         do {
@@ -158,24 +155,6 @@ private struct GeneralSettings: View {
             } header: { Text("Services") } footer: {
                 Text("When a service's port is already in use, grab a fresh free port instead of failing to start.")
             }
-            Section {
-                Toggle("Notify on Claude activity", isOn: $state.notifyClaude)
-                    .onChange(of: state.notifyClaude) { if state.notifyClaude { Notifier.promptOrOpenSettings(); recheckNotif() } }
-                if state.notifyClaude && !notifOK {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Theme.warn)
-                        Text("macOS hasn't granted notification permission").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
-                        Spacer()
-                        Button("Grant") { Notifier.promptOrOpenSettings(); recheckNotif() }
-                            .controlSize(.small)
-                    }
-                }
-                Button("Send test notification") { Notifier.sendTest(); recheckNotif() }
-                    .controlSize(.small)
-            } header: { Text("Notifications") } footer: {
-                Text("A sound + banner when Claude finishes, asks for input, or compacts — for a workspace you're not currently viewing. Needs macOS notification permission.")
-            }
-            .task { recheckNotif() }
             Section {
                 LabeledContent("Version") {
                     Text(version.isEmpty ? "…" : version).monospaced().foregroundStyle(Theme.fgMuted)

@@ -75,7 +75,7 @@ struct ChipSelect: View {
     var body: some View {
         Button { open.toggle() } label: {
             HStack(spacing: 3) {
-                Text(text).font(Theme.mono(11))
+                Text(text).font(Theme.mono(11)).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 6, weight: .bold)).opacity(0.7)
             }
             .foregroundStyle(color)
@@ -94,7 +94,7 @@ struct ChipSelect: View {
                 }
             }
             .padding(5)
-            .frame(minWidth: 180)
+            .frame(minWidth: 180, maxWidth: 320)
             .background(Theme.panel3)
         }
     }
@@ -113,6 +113,7 @@ private struct ChipSelectRow: View {
                 Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(tint).opacity(selected ? 1 : 0).frame(width: 12)
                 Text(title).font(Theme.mono(11.5)).foregroundStyle(selected ? tint : Theme.fg)
+                    .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 12)
             }
             .padding(.horizontal, 8).padding(.vertical, 5)
