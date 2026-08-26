@@ -37,7 +37,7 @@ var (
 	appDir string
 )
 
-const appVersion = "0.1.7"
+const appVersion = "0.2.0"
 
 //export PomInit
 func PomInit(cfgPath *C.char) *C.char {
