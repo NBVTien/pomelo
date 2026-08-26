@@ -6,6 +6,20 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-26
+
+### Added
+- Dependency Store: a global node_modules cache board (node_modules -> hash -> workspaces) with Optimize to capture hand-installed deps and Dedupe to reclaim disk via CoW. (#27)
+- Update from origin for the golden source: a main-only action with a per-repo progress sheet. (#27)
+
+### Changed
+- Workspace, repo-column, and database-tree reordering is gesture-driven now. (#27)
+- CI is path-gated behind a single CI Gate; onboarding seeds pom.yml via detect. (#27)
+
+### Fixed
+- Config tree fits the sidebar width instead of clipping long fragment names. (#27)
+- Golden-source update pulls only the default branch, avoiding the fast-forward-to-multiple-branches failure. (#27)
+
 ## [0.1.7] - 2026-08-26
 
 ### Added
