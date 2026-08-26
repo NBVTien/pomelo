@@ -6,6 +6,14 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-27
+
+### Added
+- Notification sounds: pick a sound per event (or several, played at random), save them as switchable sound sets, and upload your own audio. Delivery has a master toggle and an option to alert even while you're viewing the workspace. (#29)
+
+### Fixed
+- The Database pane shortcut (Cmd-4) is now listed in Settings > Shortcuts. (#30)
+
 ## [0.2.0] - 2026-08-26
 
 ### Added
