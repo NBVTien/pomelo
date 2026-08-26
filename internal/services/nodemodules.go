@@ -3,12 +3,14 @@ package services
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/pomelohq/pomelo/internal/paths"
 )
@@ -30,13 +32,129 @@ func MainLockHash(projectRoot, repo, defaultBranch string) string {
 	return lockHash(RepoWorktreePath(projectRoot, repo, defaultBranch, true))
 }
 
+func LockHash(worktree string) string { return lockHash(worktree) }
+
+type nmLink struct {
+	Hash  string `json:"hash"`
+	MTime int64  `json:"mtime"`
+}
+
+func nmLinksPath() string { return filepath.Join(nmStoreRoot(), ".links.json") }
+
+func loadNMLinks() map[string]nmLink {
+	m := map[string]nmLink{}
+	if data, err := os.ReadFile(nmLinksPath()); err == nil {
+		_ = json.Unmarshal(data, &m)
+	}
+	return m
+}
+
+func saveNMLinks(m map[string]nmLink) {
+	if data, err := json.Marshal(m); err == nil {
+		_ = os.WriteFile(nmLinksPath(), data, 0o644)
+	}
+}
+
+type NMReclaimTarget struct{ Repo, Branch, Worktree string }
+
+// ReclaimNodeModules relinks each target's node_modules to the shared store copy,
+// skipping ones already linked (see relinkOne). Returns how many were actually relinked.
+func ReclaimNodeModules(targets []NMReclaimTarget, progress func(repo, branch string)) int {
+	links := loadNMLinks()
+	relinked := 0
+	for _, t := range targets {
+		if progress != nil {
+			progress(t.Repo, t.Branch)
+		}
+		if ok, _ := relinkOne(t.Repo, t.Worktree, links); ok {
+			relinked++
+		}
+	}
+	saveNMLinks(links)
+	return relinked
+}
+
+// relinkOne CoW-clones a worktree's node_modules from the store so they share blocks.
+// Skips cross-volume (clonefile can't span volumes) and worktrees already linked to
+// this hash and untouched since (mtime unchanged) — a reinstall bumps mtime.
+func relinkOne(repo, worktree string, links map[string]nmLink) (bool, error) {
+	nm := filepath.Join(worktree, "node_modules")
+	st, err := os.Stat(nm)
+	if err != nil || !st.IsDir() {
+		return false, nil
+	}
+	h := lockHash(worktree)
+	if h == "" {
+		return false, nil
+	}
+	store := nmStoreDir(repo, h)
+	if !DirExists(store) || !sameVolume(store, nm) {
+		return false, nil
+	}
+	if l, ok := links[worktree]; ok && l.Hash == h && l.MTime == st.ModTime().UnixNano() {
+		return false, nil
+	}
+	if err := cowCopy(store, nm); err != nil {
+		return false, err
+	}
+	if fi, err := os.Stat(nm); err == nil {
+		links[worktree] = nmLink{Hash: h, MTime: fi.ModTime().UnixNano()}
+	}
+	return true, nil
+}
+
+func sameVolume(a, b string) bool {
+	sa, err1 := os.Stat(a)
+	sb, err2 := os.Stat(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	da, oka := sa.Sys().(*syscall.Stat_t)
+	db, okb := sb.Sys().(*syscall.Stat_t)
+	return oka && okb && da.Dev == db.Dev
+}
+
+func FreeBytes(path string) int64 {
+	var st syscall.Statfs_t
+	if syscall.Statfs(path, &st) != nil {
+		return 0
+	}
+	return int64(st.Bavail) * int64(st.Bsize)
+}
+
+func nmIndexPath() string { return filepath.Join(nmStoreRoot(), ".index.json") }
+
+func loadNMIndex() map[string]NMStoreEntry {
+	idx := map[string]NMStoreEntry{}
+	if data, err := os.ReadFile(nmIndexPath()); err == nil {
+		var arr []NMStoreEntry
+		if json.Unmarshal(data, &arr) == nil {
+			for _, e := range arr {
+				idx[e.Repo+"/"+e.Hash] = e
+			}
+		}
+	}
+	return idx
+}
+
+func saveNMIndex(entries []NMStoreEntry) {
+	if data, err := json.Marshal(entries); err == nil {
+		_ = os.WriteFile(nmIndexPath(), data, 0o644)
+	}
+}
+
+// NMStoreEntries lists the cached node_modules and their sizes. Sizes are read
+// from a persisted index and only recomputed (du) for a cache whose dir mtime
+// changed — so the common read is cheap instead of walking every node_modules.
 func NMStoreEntries() []NMStoreEntry {
 	root := nmStoreRoot()
 	repos, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
+	idx := loadNMIndex()
 	var out []NMStoreEntry
+	dirty := false
 	for _, repo := range repos {
 		if !repo.IsDir() {
 			continue
@@ -54,9 +172,18 @@ func NMStoreEntries() []NMStoreEntry {
 			if fi, err := os.Stat(p); err == nil {
 				mtime = fi.ModTime().Unix()
 			}
+			key := repo.Name() + "/" + h.Name()
+			if c, ok := idx[key]; ok && c.MTime == mtime && c.Bytes > 0 {
+				out = append(out, c)
+				continue
+			}
+			dirty = true
 			out = append(out, NMStoreEntry{Repo: repo.Name(), Hash: h.Name(),
 				Bytes: dirSizeKB(p) * 1024, MTime: mtime})
 		}
+	}
+	if dirty || len(out) != len(idx) {
+		saveNMIndex(out)
 	}
 	return out
 }
@@ -78,7 +205,17 @@ func RemoveNMStoreEntry(repo, hash string) error {
 	if repo == "" || hash == "" || strings.ContainsAny(repo+hash, "/\\") || strings.Contains(repo, "..") || strings.Contains(hash, "..") {
 		return os.ErrInvalid
 	}
-	return os.RemoveAll(filepath.Join(nmStoreRoot(), repo, hash))
+	if err := os.RemoveAll(filepath.Join(nmStoreRoot(), repo, hash)); err != nil {
+		return err
+	}
+	kept := make([]NMStoreEntry, 0)
+	for k, e := range loadNMIndex() {
+		if k != repo+"/"+hash {
+			kept = append(kept, e)
+		}
+	}
+	saveNMIndex(kept)
+	return nil
 }
 
 func lockHash(worktree string) string {

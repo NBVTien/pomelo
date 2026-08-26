@@ -115,7 +115,7 @@ struct SessionsMenu: View {
         .confirmationDialog("Delete session \(confirmDeleteSession ?? "")?", isPresented: Binding(get: { confirmDeleteSession != nil }, set: { if !$0 { confirmDeleteSession = nil } }), titleVisibility: .visible) {
             Button("Delete", role: .destructive) { if let n = confirmDeleteSession { state.deleteSession(n) }; confirmDeleteSession = nil }
             Button("Cancel", role: .cancel) { confirmDeleteSession = nil }
-        } message: { Text("Removes it from the session list. Files on disk are left untouched.") }
+        } message: { Text("Stops the session's services and shared containers, then removes it from the list. Files on disk are left untouched.") }
     }
 }
 
@@ -188,8 +188,11 @@ struct HeaderTrailing: View {
     var body: some View {
         HStack(spacing: 12) {
             if state.agentModel != nil { agentChip }
+            if state.onboardModel != nil && state.onboardBranch == nil { onboardChip }
             Button { state.showShared = true } label: { Image(systemName: "cylinder.split.1x2").font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Shared services", shortcut: "⇧⌘S", align: .bottomTrailing)
+            Button { state.showDependencies = true } label: { Image(systemName: "shippingbox").font(.system(size: 12)) }
+                .buttonStyle(.plain).tooltip("Dependency store", align: .bottomTrailing)
             Button { state.openActivity(scope: nil) } label: { Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Activity Monitor · all workspaces", shortcut: "⇧⌘0", align: .bottomTrailing)
             Button { state.showSessionPanel = true } label: { Image(systemName: "chevron.left.forwardslash.chevron.right").font(.system(size: 12)) }
@@ -200,6 +203,23 @@ struct HeaderTrailing: View {
                 .buttonStyle(.plain).tooltip("Settings", shortcut: "⌘,", align: .bottomTrailing)
         }
         .frame(height: 28)
+    }
+
+    private var onboardChip: some View {
+        HStack(spacing: 5) {
+            if state.onboardRunning { ProgressView().controlSize(.small).scaleEffect(0.55) }
+            else { Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundStyle(Theme.ok) }
+            Text(state.onboardRunning ? "Onboarding…" : "Onboarding done")
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.fg).lineLimit(1)
+            Button { state.endOnboard() } label: { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                .buttonStyle(.plain).foregroundStyle(Theme.dim).help("Dismiss onboarding")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Theme.accent.opacity(0.15), in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.35)))
+        .contentShape(Capsule())
+        .onTapGesture { state.reopenOnboard() }
+        .help(state.onboardRunning ? "Onboarding running — click to view" : "Onboarding finished — click to view")
     }
 
     private var agentChip: some View {

@@ -38,6 +38,57 @@ func TestMonorepoTurboPnpm(t *testing.T) {
 	}
 }
 
+// nx apps run via `nx serve <name>`; libraries and e2e projects are dropped.
+// (Modelled on nx-examples, an Angular nx workspace.)
+func TestMonorepoNxProjectJSON(t *testing.T) {
+	root := writeRepo(t, map[string]string{
+		"nx.json":                     "{}",
+		"package.json":                `{"dependencies":{"@angular/core":"21"}}`,
+		"yarn.lock":                   "",
+		"apps/cart/project.json":      `{"name":"cart","projectType":"application"}`,
+		"apps/cart/package.json":      `{"name":"cart"}`,
+		"apps/cart-e2e/project.json":  `{"name":"cart-e2e","projectType":"application","tags":["type:e2e"]}`,
+		"libs/shared/ui/project.json": `{"name":"shared-ui","projectType":"library"}`,
+	})
+	facts := detect.DetectRepo(root)
+	cart, ok := factByDir(facts, "apps/cart")
+	if !ok || cart.Framework != "angular" {
+		t.Fatalf("apps/cart should be angular: %+v", facts)
+	}
+	if len(cart.Run) == 0 || cart.Run[0].Cmd != "yarn nx serve cart" {
+		t.Fatalf("apps/cart run should be 'yarn nx serve cart': %+v", cart.Run)
+	}
+	if _, ok := factByDir(facts, "apps/cart-e2e"); ok {
+		t.Fatalf("e2e project should be dropped: %+v", facts)
+	}
+	if _, ok := factByDir(facts, "libs/shared/ui"); ok {
+		t.Fatalf("library should be dropped: %+v", facts)
+	}
+}
+
+// Single-app nx workspace: root project.json is the app, e2e sibling dropped.
+// (Caught on node-express-realworld: root missed, e2e mis-detected.)
+func TestMonorepoNxRootApp(t *testing.T) {
+	root := writeRepo(t, map[string]string{
+		"nx.json":          "{}",
+		"package.json":     `{"dependencies":{"express":"4"}}`,
+		"project.json":     `{"name":"api","projectType":"application","targets":{"serve":{}}}`,
+		"e2e/project.json": `{"name":"e2e","projectType":"application","targets":{"e2e":{}}}`,
+		"e2e/package.json": `{"name":"e2e"}`,
+	})
+	facts := detect.DetectRepo(root)
+	api, ok := factByDir(facts, "")
+	if !ok || api.Framework != "express" {
+		t.Fatalf("root should be express: %+v", facts)
+	}
+	if api.Run[0].Cmd != "npx nx serve api" {
+		t.Fatalf("root run should be 'npx nx serve api': %+v", api.Run)
+	}
+	if _, ok := factByDir(facts, "e2e"); ok {
+		t.Fatalf("e2e project should be dropped: %+v", facts)
+	}
+}
+
 func TestMonorepoPkgJSONWorkspaces(t *testing.T) {
 	root := writeRepo(t, map[string]string{
 		"package.json":               `{"workspaces":["packages/*"]}`,

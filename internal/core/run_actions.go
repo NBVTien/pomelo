@@ -91,24 +91,25 @@ func (s *Server) MainPull(branch string) map[string]any {
 		Error  string `json:"error,omitempty"`
 	}
 
-	names := s.cfg().RepoOrder
-	if len(names) == 0 {
-		for name := range s.cfg().Repos {
-			names = append(names, name)
+	// Real golden-source repos (not config-name paths, which can miss repos).
+	var mainRepos []Repo
+	for _, ws := range s.collectWorkspaces(false, true) {
+		if ws.IsMain {
+			mainRepos = ws.Repos
+			break
 		}
 	}
 
 	var (
 		wg      sync.WaitGroup
 		mu      sync.Mutex
-		results = make([]repoResult, 0, len(names))
+		results = make([]repoResult, 0, len(mainRepos))
 	)
-	for _, name := range names {
-		dir := repoWorktreePath(s.WorkspaceRoot, name, branch, true)
-		if !isGitRepo(dir) {
+	for _, r := range mainRepos {
+		if !isGitRepo(r.Path) {
 			continue
 		}
-		def := s.cfg().DefaultBranchFor(name)
+		def := s.cfg().DefaultBranchFor(r.Name)
 		wg.Add(1)
 		go func(repo, dir, def string) {
 			defer wg.Done()
@@ -120,7 +121,7 @@ func (s *Server) MainPull(branch string) map[string]any {
 			mu.Lock()
 			results = append(results, res)
 			mu.Unlock()
-		}(name, dir, def)
+		}(r.Name, r.Path, def)
 	}
 	wg.Wait()
 

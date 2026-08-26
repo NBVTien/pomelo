@@ -40,6 +40,8 @@ protocol ConfigAPI: PomBaseAPI {
     func configFilesData() -> Data
     func configFileGetData(path: String) -> Data
     func configFileSet(path: String, yaml: String, dry: Bool) -> Data
+    func configFileCreate(name: String, yaml: String) -> Data
+    func installDeps(branch: String, isMain: Bool) -> Data
     func configReload() -> Data
     func configExplainData(repo: String, branch: String, svc: String, env: String) -> Data
     func environmentsData() -> Data
@@ -111,6 +113,9 @@ protocol CoreAPI: PomBaseAPI {
     func logsData() -> Data
     func nmStoreListData() -> Data
     func nmStoreDelete(repo: String, hash: String) -> Data
+    func nmStoreReconcile() -> Data
+    func nmStoreReclaim() -> Data
+    func nmStoreProgress() -> String
     func syncGetData() -> Data
     func syncSet(refreshMain: Bool, intervalSec: Int) -> Data
     func fetchImageData(url: String) -> Data

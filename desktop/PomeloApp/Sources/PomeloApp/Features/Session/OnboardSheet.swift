@@ -169,23 +169,161 @@ struct AgentSheet: View {
     }
 }
 
-struct OnboardSheet: View {
-    let branch: String
-    let onClose: () -> Void
-    @StateObject private var model = AgentStreamModel()
-    private let firstTurn = "Onboard this session now: analyze every cloned repo and author a correct, complete pom.yml " +
+enum OnboardPrompts {
+    static let firstTurn = "Onboard this session now: analyze every cloned repo and author a correct, complete pom.yml " +
         "(frameworks, monorepo apps, all processes, setup, shared services from every compose incl. extends, and repo " +
         "aliases). Loop config_doctor until zero errors. Then call config_normalize as the FINAL step (it strips " +
         "removed keys, migrates colon→dot, and tidies into pom.d), and confirm what you defined."
+}
+
+struct OnboardSheet: View {
+    @ObservedObject var model: AgentStreamModel
+    let startAt: Date
+    let branch: String
+    var onBackground: () -> Void = {}
+    var onDone: () -> Void = {}
+
+    @State private var findings: [DoctorViewModel.Finding] = []
+    @State private var showResult = false
+    @State private var endedAt: Date?
+    @State private var showLog = false
+    @State private var installing = false
+    @State private var authorDone = false
 
     var body: some View {
-        AgentSheet(
-            model: model,
-            title: "Onboarding",
-            subtitle: "Reads each repo (framework, monorepo apps, processes, docker-compose incl. extends), writes a runnable config with env wired, and loops config_doctor until clean.",
-            runningLabel: "Onboarding — analyzing repos & authoring pom.yml…",
-            onBackground: onClose, onDone: { model.stop(); onClose() },
-            onStop: { model.stop(); onClose() })
-        .onAppear { model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: firstTurn) }
+        Group {
+            if showResult { resultSheet } else { onboardingBody }
+        }
+        .onAppear { if !model.running && !authorDone { authorDone = true; Task { await verifyAndInstall() } } }
+        .onChange(of: model.running) {
+            if !model.running && !authorDone { authorDone = true; Task { await verifyAndInstall() } }
+        }
+    }
+
+    private func verifyAndInstall() async {
+        installing = true
+        let d = await Task.detached { PomCore.shared.installDeps(branch: branch, isMain: true) }.value
+        struct Fail: Decodable { var id = ""; var title = ""; var detail = "" }
+        struct R: Decodable { var ok = false; var failed: [Fail] = [] }
+        let failed = PomJSON.decode(R.self, from: d)?.failed ?? []
+        installing = false
+        endedAt = Date()
+        await loadFindings(extraSetup: failed.map { ($0.id, $0.title, $0.detail) })
+    }
+
+    private var onboardingBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                if model.running { ProgressView().controlSize(.small).scaleEffect(0.8) }
+                Text("Onboarding · \(PomCore.shared.session)")
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.fg)
+                Spacer()
+                TimelineView(.periodic(from: startAt, by: 1)) { ctx in
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock").font(.system(size: 10))
+                        Text(mmss(startAt, endedAt ?? ctx.date)).font(Theme.mono(11))
+                    }.foregroundStyle(Theme.fgMuted)
+                }
+            }
+            phaseList
+            Text("Now: \(nowLine)").font(.system(size: 12)).foregroundStyle(Theme.fgMuted).lineLimit(2)
+
+            DisclosureGroup(isExpanded: $showLog) {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(model.entries) { AgentEntryRow(entry: $0) }
+                            Color.clear.frame(height: 1).id("bottom")
+                        }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 240).background(Theme.bg, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
+                    .onChange(of: model.tick) { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+            } label: {
+                Text("Activity · \(model.entries.count) step\(model.entries.count == 1 ? "" : "s")")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.accent)
+            }
+
+            Spacer(minLength: 0)
+            HStack {
+                Button("Stop") { onDone() }.buttonStyle(.bordered).tint(Theme.danger)
+                Spacer()
+                Button("Run in background") { onBackground() }.buttonStyle(.borderedProminent).tint(Theme.accent)
+            }
+        }
+        .padding(18).frame(width: 640, height: 520)
+    }
+
+    private var phaseList: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            phaseRow(done: true, active: false, "Scan repos", "cloned")
+            phaseRow(done: authorDone, active: model.running, "Author config", model.running ? "writing pom.yml…" : "done")
+            phaseRow(done: authorDone && !installing, active: installing, "Install & migrate",
+                     installing ? "installing deps + migrating…" : (authorDone ? "done" : "waiting"))
+        }
+    }
+
+    private func phaseRow(done: Bool, active: Bool, _ title: String, _ detail: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: done ? "checkmark.circle.fill" : (active ? "circle.dashed" : "circle"))
+                .font(.system(size: 11)).foregroundStyle(done ? Theme.ok : (active ? Theme.accent : Theme.dim))
+            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.fg)
+            Text(detail).font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+            Spacer()
+        }
+    }
+
+    private func mmss(_ from: Date, _ to: Date) -> String {
+        let s = max(0, Int(to.timeIntervalSince(from)))
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    private var nowLine: String {
+        guard let e = model.entries.last else { return model.started ? "working…" : "starting Claude…" }
+        switch e.kind {
+        case .tool: return "running \(e.text)"
+        case .text: return e.text.split(separator: "\n").last.map(String.init) ?? "…"
+        case .system, .error: return e.text
+        }
+    }
+
+    private var resultSheet: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock").font(.system(size: 10))
+                Text("Onboarding done · \(mmss(startAt, endedAt ?? Date()))").font(.system(size: 12, weight: .medium))
+                Spacer()
+            }.foregroundStyle(Theme.fgMuted).padding(.horizontal, 16).padding(.top, 14)
+            ScrollView { OnboardResultView(findings: findings, services: 0, onRetry: retry) }
+            HStack {
+                Spacer()
+                Button("Done") { onDone() }.buttonStyle(.borderedProminent).tint(Theme.accent)
+            }
+            .padding(.horizontal, 16).padding(.bottom, 14)
+        }
+        .frame(width: 640, height: 520)
+    }
+
+    private func loadFindings(extraSetup: [(String, String, String)] = []) async {
+        let d = await Task.detached { PomCore.shared.doctorData() }.value
+        let report = PomJSON.decode(DoctorViewModel.Report.self, from: d)
+        var all = (report?.findings ?? []).filter { $0.severity != "ok" }
+        for (id, title, detail) in extraSetup {
+            var f = DoctorViewModel.Finding(); f.id = id; f.title = title; f.detail = detail; f.severity = "error"
+            all.append(f)
+        }
+        findings = all
+        showResult = true
+    }
+
+    private func retry() {
+        model.stop()
+        showResult = false
+        findings = []
+        authorDone = false
+        installing = false
+        endedAt = nil
+        model.start(branch: branch, isMain: true, role: "onboarder", firstTurn: OnboardPrompts.firstTurn)
     }
 }

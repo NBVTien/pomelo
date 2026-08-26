@@ -49,8 +49,14 @@ struct RootView: View {
             .sheet(isPresented: $state.showPipeline) {
                 PrepareMainPipelineView().environmentObject(state).environmentObject(theme)
             }
+            .sheet(item: $state.updateMainWs) { ws in
+                UpdateMainSheet(ws: ws).environmentObject(state).environmentObject(theme)
+            }
             .sheet(isPresented: $state.showShared) {
                 SharedServicesView(onClose: { state.showShared = false }).environmentObject(state).environmentObject(theme)
+            }
+            .sheet(isPresented: $state.showDependencies) {
+                DependencyBoard(onClose: { state.showDependencies = false }).environmentObject(state).environmentObject(theme)
             }
             .sheet(isPresented: $state.showSessionPanel) {
                 SessionPanel(onClose: { state.showSessionPanel = false }).environmentObject(state).environmentObject(theme)
@@ -62,8 +68,12 @@ struct RootView: View {
                 CreateSessionSheet().environmentObject(state).environmentObject(theme)
             }
             .sheet(isPresented: Binding(get: { state.onboardBranch != nil }, set: { if !$0 { state.onboardBranch = nil } })) {
-                OnboardSheet(branch: state.onboardBranch ?? "main", onClose: { state.onboardBranch = nil })
-                    .environmentObject(state).environmentObject(theme)
+                if let m = state.onboardModel {
+                    OnboardSheet(model: m, startAt: state.onboardStartAt ?? Date(), branch: state.onboardBranchName,
+                                 onBackground: { state.onboardBranch = nil },
+                                 onDone: { state.endOnboard() })
+                        .environmentObject(state).environmentObject(theme)
+                }
             }
             .sheet(isPresented: $state.showAgentSheet) {
                 if let m = state.agentModel {
@@ -108,8 +118,8 @@ struct RootView: View {
                         if let err = state.configError {
                             ConfigErrorOverlay(message: err) { state.showSessionPanel = true }
                                 .environmentObject(state)
-                        } else if let ws = state.selectedWorkspace {
-                            WorkspacePane(workspace: ws)
+                        } else if state.selectedWorkspace != nil {
+                            KeepAliveWorkspaceHost()
                         } else if state.loading {
                             VStack(spacing: 12) {
                                 ProgressView().controlSize(.large)
@@ -191,6 +201,12 @@ struct WorkspaceSidebar: View {
     @EnvironmentObject var ui: UIStore
 
     @Environment(\.openWindow) private var openWindow
+    @State private var dragId: String?
+    @State private var dragTranslation: CGFloat = 0
+    @State private var heights: [String: CGFloat] = [:]
+
+    private let rowSpacing: CGFloat = 2
+    private var items: [Workspace] { state.orderedNonMain.filter { !state.opBranches.contains($0.branch) } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -209,31 +225,116 @@ struct WorkspaceSidebar: View {
 
             OpsBar()
 
-            List {
-                ForEach(state.mainWorkspaces) { ws in
-                    wsRow(ws).moveDisabled(true)
+            ScrollView {
+                LazyVStack(spacing: rowSpacing) {
+                    ForEach(state.mainWorkspaces) { ws in WsRow(ws: ws) }
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, ws in
+                        WsRow(ws: ws)
+                            .background(HeightReader(id: ws.id))
+                            .offset(y: rowOffset(idx))
+                            .scaleEffect(dragId == ws.id ? 1.03 : 1)
+                            .shadow(color: dragId == ws.id ? .black.opacity(0.28) : .clear,
+                                    radius: dragId == ws.id ? 9 : 0, y: 5)
+                            .opacity(dragId != nil && dragId != ws.id ? 0.85 : 1)
+                            .zIndex(dragId == ws.id ? 2 : 0)
+                            .animation(dragId == ws.id ? nil : .spring(response: 0.26, dampingFraction: 0.82), value: rowOffset(idx))
+                            .animation(.spring(response: 0.24, dampingFraction: 0.8), value: dragId)
+                            .gesture(reorderGesture(idx: idx, ws: ws))
+                    }
                 }
-                ForEach(state.orderedNonMain.filter { !state.opBranches.contains($0.branch) }) { ws in
-                    wsRow(ws)
-                        .draggable(ws.id)
-                        .dropDestination(for: String.self) { items, _ in
-                            guard let dragged = items.first else { return false }
-                            state.moveWorkspace(dragged, before: ws.id)
-                            return true
-                        }
-                }
+                .padding(.horizontal, 4).padding(.vertical, 4)
+                .onPreferenceChange(RowHeightKey.self) { heights = $0 }
             }
-            .listStyle(.plain)
-            .environment(\.defaultMinListRowHeight, 1)
             .scrollContentBackground(.hidden)
         }
     }
 
-    private func wsRow(_ ws: Workspace) -> some View {
-        WsRow(ws: ws)
-            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+    private func HeightReader(id: String) -> some View {
+        GeometryReader { g in Color.clear.preference(key: RowHeightKey.self, value: [id: g.size.height]) }
+    }
+
+    private var midYs: [CGFloat] {
+        var y: CGFloat = 0
+        return items.map { ws in
+            let h = heights[ws.id] ?? 44
+            defer { y += h + rowSpacing }
+            return y + h / 2
+        }
+    }
+
+    private var targetIndex: Int {
+        guard let dragId, let from = items.firstIndex(where: { $0.id == dragId }) else { return 0 }
+        let mids = midYs
+        guard from < mids.count else { return from }
+        let mid = mids[from] + dragTranslation
+        var t = from
+        while t > 0 && mid < mids[t - 1] { t -= 1 }
+        while t < items.count - 1 && mid > mids[t + 1] { t += 1 }
+        return t
+    }
+
+    private func rowOffset(_ idx: Int) -> CGFloat {
+        guard let dragId, let from = items.firstIndex(where: { $0.id == dragId }) else { return 0 }
+        if idx == from { return dragTranslation }
+        let dh = (heights[dragId] ?? 44) + rowSpacing
+        let to = targetIndex
+        if from < to, idx > from, idx <= to { return -dh }
+        if from > to, idx >= to, idx < from { return dh }
+        return 0
+    }
+
+    private func reorderGesture(idx: Int, ws: Workspace) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
+            .onChanged { v in
+                if dragId == nil { dragId = ws.id }
+                dragTranslation = v.translation.height
+            }
+            .onEnded { _ in
+                let t = targetIndex
+                state.moveWorkspace(ws.id, toIndex: t)
+                dragId = nil
+                dragTranslation = 0
+            }
+    }
+}
+
+struct RowHeightKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, n in n }
+    }
+}
+
+// Keeps the selected + recently-visited workspace panes mounted (LRU-capped) and
+// just toggles visibility, so switching between them is instant — no remount, no
+// claude reconnect / "starting…" flash. Panes beyond the cap are dropped (reopen
+// pays a one-time load).
+struct KeepAliveWorkspaceHost: View {
+    @EnvironmentObject var state: AppState
+    @State private var mounted: [String] = []
+    private let cap = 4
+
+    var body: some View {
+        ZStack {
+            ForEach(mounted, id: \.self) { id in
+                if let ws = state.workspaces.first(where: { $0.id == id }) {
+                    WorkspacePane(workspace: ws)
+                        .opacity(id == state.selection ? 1 : 0)
+                        .allowsHitTesting(id == state.selection)
+                        .zIndex(id == state.selection ? 1 : 0)
+                }
+            }
+        }
+        .onAppear(perform: sync)
+        .onChange(of: state.selection) { sync() }
+    }
+
+    private func sync() {
+        guard let sel = state.selection else { return }
+        var m = mounted.filter { $0 != sel }
+        m.insert(sel, at: 0)
+        if m.count > cap { m = Array(m.prefix(cap)) }
+        mounted = m.filter { id in state.workspaces.contains { $0.id == id } }
     }
 }
 
@@ -266,7 +367,9 @@ struct RowContextMenu: View {
         VStack(spacing: 1) {
             PopItem("Rename…", icon: "pencil") { dismiss(); state.renamingWs = ws }
             PopItem("Open in editor", icon: "square.and.pencil") { dismiss(); state.openEditor(ws) }
-            PopItem(ws.isMain ? "Update main from origin" : "Update from origin", icon: "arrow.triangle.2.circlepath") { dismiss(); state.pullWorkspace(ws) }
+            if ws.isMain {
+                PopItem("Update main from origin", icon: "arrow.triangle.2.circlepath") { dismiss(); state.updateMainWs = ws }
+            }
             if ws.running > 0 {
                 PopItem("Stop all services", icon: "stop.fill") { dismiss(); state.stopAllServices(ws) }
             }
@@ -467,17 +570,7 @@ struct CreateWorkspaceView: View {
 
     private var suggestions: [SprintIssue] {
         let existing = Set(state.workspaces.compactMap { jiraKey($0.branch) })
-        let q = ticket.trimmingCharacters(in: .whitespaces)
-        let avail = sprint.filter { !existing.contains($0.key.uppercased()) && (!state.jiraOnlyMine || $0.mine) }
-        let scored: [(iss: SprintIssue, score: Int)] = avail.compactMap { iss in
-            if q.isEmpty { return (iss, 0) }
-            let s = [Fuzzy.score(q, iss.key), Fuzzy.score(q, iss.summary)].compactMap { $0 }.max()
-            return s.map { (iss, $0) }
-        }
-        return scored.sorted {
-            $0.iss.mine != $1.iss.mine ? ($0.iss.mine && !$1.iss.mine)
-                : ($0.score != $1.score ? $0.score > $1.score : $0.iss.key < $1.iss.key)
-        }.map(\.iss)
+        return SprintSuggest.rank(sprint, existing: existing, query: ticket, onlyMine: state.jiraOnlyMine)
     }
 
     var body: some View {

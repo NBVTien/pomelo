@@ -104,7 +104,47 @@ final class AppState: ObservableObject {
     @Published var appActive = true
     @Published var showActivity = false
     @Published var showPipeline = false
+    @Published var updateMainWs: Workspace?
     @Published var fullscreen = false
+
+    @Published var nmBusy = false
+    @Published var nmPhase = ""
+    @Published var nmSummary: String?
+
+    func nmOptimize(reclaim: Bool) {
+        guard !nmBusy else { return }
+        nmBusy = true; nmSummary = nil
+        nmPhase = reclaim ? "Deduping…" : "Optimizing…"
+        let poll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                let p = await Task.detached { PomCore.shared.nmStoreProgress() }.value
+                if let self, self.nmBusy, !p.isEmpty { self.nmPhase = p }
+            }
+        }
+        Task { [weak self] in
+            let data = await Task.detached { reclaim ? PomCore.shared.nmStoreReclaim() : PomCore.shared.nmStoreReconcile() }.value
+            poll.cancel()
+            guard let self else { return }
+            self.nmSummary = AppState.nmSummaryText(reclaim: reclaim, data: data)
+            self.nmPhase = ""; self.nmBusy = false
+        }
+    }
+
+    private static func nmSummaryText(reclaim: Bool, data: Data) -> String {
+        let obj = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
+        func size(_ v: Any?) -> String {
+            let n = (v as? NSNumber)?.doubleValue ?? 0
+            return n >= 1_073_741_824 ? String(format: "%.2f GB", n / 1_073_741_824) : String(format: "%.0f MB", n / 1_048_576)
+        }
+        if reclaim {
+            let r = (obj["relinked"] as? NSNumber)?.intValue ?? 0
+            let rec = (obj["reclaimed"] as? NSNumber)?.int64Value ?? 0
+            return rec > 0 ? "Reclaimed \(size(obj["reclaimed"])) (\(r) relinked)" : "Nothing to reclaim"
+        }
+        let a = (obj["added"] as? NSNumber)?.intValue ?? 0
+        return a > 0 ? "Cached \(a) new (\(size(obj["bytes"])))" : "Already optimized"
+    }
     var activityScope: String? = nil
 
     func openActivity(scope: String?) { activityScope = scope; showActivity = true }
@@ -118,6 +158,7 @@ final class AppState: ObservableObject {
 
     @Published var showSettings = false
     @Published var showShared = false
+    @Published var showDependencies = false
     @Published var showSessionPanel = false
     @Published var showCreateSession = false
     @Published var showSessions = false
@@ -171,6 +212,33 @@ final class AppState: ObservableObject {
     }
     func reopenAgent() { if agentModel != nil { showAgentSheet = true } }
     func backgroundAgent() { showAgentSheet = false }
+
+    // Onboarding lives here (not in the sheet) so "Run in background" keeps it
+    // alive and a TopBar chip can reopen it.
+    @Published var onboardModel: AgentStreamModel?
+    @Published var onboardStartAt: Date?
+    private(set) var onboardBranchName = "main"
+    private var onboardBag = Set<AnyCancellable>()
+    var onboardRunning: Bool { onboardModel?.running ?? false }
+
+    func startOnboard(branch: String) {
+        onboardBranchName = branch
+        if onboardModel == nil {
+            let m = AgentStreamModel()
+            onboardBag.removeAll()
+            m.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &onboardBag)
+            onboardModel = m
+            onboardStartAt = Date()
+            m.start(branch: branch, isMain: true, role: "onboarder", firstTurn: OnboardPrompts.firstTurn)
+        }
+        onboardBranch = branch
+        bringMainWindowToFront()
+    }
+    func reopenOnboard() { if onboardModel != nil { onboardBranch = onboardBranchName } }
+    func endOnboard() {
+        onboardModel?.stop(); onboardModel = nil; onboardStartAt = nil; onboardBag.removeAll()
+        onboardBranch = nil; Task { await refreshConfigHealth() }
+    }
     func endAgent() { agentModel?.stop(); agentModel = nil; agentTarget = nil; agentBag.removeAll(); showAgentSheet = false; Task { await refreshConfigHealth() } }
     @Published var jiraOnlyMine = UserDefaults.standard.bool(forKey: "jiraOnlyMine") {
         didSet { UserDefaults.standard.set(jiraOnlyMine, forKey: "jiraOnlyMine") }
@@ -212,12 +280,20 @@ final class AppState: ObservableObject {
         arr.insert(dragged, at: to)
         repoOrder = arr
     }
+    func moveRepo(_ dragged: String, toIndex t: Int, in names: [String]) {
+        var arr = names
+        guard let from = arr.firstIndex(of: dragged) else { return }
+        arr.remove(at: from)
+        arr.insert(dragged, at: min(max(t, 0), arr.count))
+        repoOrder = arr
+    }
 
     var mainWorkspaces: [Workspace] { wsvm.mainWorkspaces }
 
     var orderedNonMain: [Workspace] { wsvm.orderedNonMain }
     func moveWorkspace(from: IndexSet, to: Int) { wsvm.moveWorkspace(from: from, to: to) }
     func moveWorkspace(_ dragged: String, before target: String) { wsvm.moveWorkspace(dragged, before: target) }
+    func moveWorkspace(_ dragged: String, toIndex t: Int) { wsvm.moveWorkspace(dragged, toIndex: t) }
     var allRepoNames: [String] { wsvm.allRepoNames }
 
     func suggestNameSlug(seed: String, desc: String = "") async -> (name: String, slug: String) {
@@ -437,22 +513,6 @@ final class AppState: ObservableObject {
                     let ref: [String: Any] = ["branch": ws.branch, "is_main": ws.isMain, "repo": repo.name, "svc": svc.name]
                     let body = (try? JSONSerialization.data(withJSONObject: ref)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                     _ = await Task.detached { PomCore.shared.serviceControl(refJSON: body, action: "stop") }.value
-                }
-            }
-            await refreshWorkspaces()
-        }
-    }
-
-    func pullWorkspace(_ ws: Workspace) {
-        Task {
-            if ws.isMain {
-                let branch = ws.branch
-                _ = await Task.detached { PomCore.shared.mainPull(branch: branch) }.value
-            } else {
-                let branch = ws.branch
-                for repo in ws.repos {
-                    let name = repo.name
-                    _ = await Task.detached { PomCore.shared.gitPull(branch: branch, repo: name, isMain: false) }.value
                 }
             }
             await refreshWorkspaces()

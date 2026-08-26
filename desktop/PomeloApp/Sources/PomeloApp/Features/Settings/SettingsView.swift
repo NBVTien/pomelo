@@ -176,7 +176,6 @@ private struct GeneralSettings: View {
                 Text("A sound + banner when Claude finishes, asks for input, or compacts — for a workspace you're not currently viewing. Needs macOS notification permission.")
             }
             .task { recheckNotif() }
-            NMStoreSection()
             Section {
                 LabeledContent("Version") {
                     Text(version.isEmpty ? "…" : version).monospaced().foregroundStyle(Theme.fgMuted)
@@ -298,7 +297,7 @@ private struct NetworkSettings: View {
 
 
 private struct CfgSvcRef: Decodable, Hashable { var repo = ""; var alias = ""; var services: [String] = [] }
-private struct CfgEnvPair: Decodable, Identifiable { var key = ""; var value = ""; var source = ""; var id: String { key } }
+private struct CfgEnvPair: Decodable, Identifiable { var key = ""; var value = ""; var source = ""; var secret = false; var id: String { key } }
 private struct CfgExplain: Decodable {
     var repo = ""; var alias = ""; var service = ""; var cmd = ""; var port = 0
     var databases: [String: String] = [:]; var env: [CfgEnvPair] = []
@@ -315,6 +314,8 @@ struct EnvInspector: View {
     @State private var profile = ""   // "" = local
     @State private var explain: CfgExplain?
     @State private var loading = false
+    @State private var revealedEnv: Set<String> = []
+    @State private var errText = ""
 
     private var services: [String] { repos.first(where: { $0.repo == repo })?.services ?? [] }
     private var branches: [String] {
@@ -326,7 +327,11 @@ struct EnvInspector: View {
         VStack(spacing: 0) {
             pickers
             Divider().overlay(Theme.borderSoft)
-            if let e = explain { table(e) } else { placeholder }
+            if let e = explain { table(e) }
+            else if !errText.isEmpty {
+                Text(errText).font(Theme.mono(11)).foregroundStyle(Theme.danger)
+                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            } else { placeholder }
         }
     }
 
@@ -369,7 +374,7 @@ struct EnvInspector: View {
                 }
                 sectionHeader(e.port > 0 ? "ENVIRONMENT · port \(e.port)" : "ENVIRONMENT")
                 ForEach(e.env) { p in
-                    row(key: p.key, value: p.value, badge: sourceText(p.source), badgeColor: sourceColor(p.source))
+                    row(key: p.key, value: p.value, badge: sourceText(p.source), badgeColor: sourceColor(p.source), secret: p.secret)
                 }
                 if e.env.isEmpty {
                     Text("no env for this service").font(.system(size: 12)).foregroundStyle(Theme.dim).padding(16)
@@ -385,13 +390,20 @@ struct EnvInspector: View {
             .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 6)
     }
 
-    private func row(key: String, value: String, badge: String, badgeColor: Color) -> some View {
-        VStack(spacing: 0) {
+    private func row(key: String, value: String, badge: String, badgeColor: Color, secret: Bool = false) -> some View {
+        let hidden = secret && !revealedEnv.contains(key) && !value.isEmpty
+        let shown = hidden ? String(repeating: "•", count: 12) : (value.isEmpty ? "—" : value)
+        return VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(key).font(Theme.mono(11.5, .medium)).foregroundStyle(Theme.fg)
                     .frame(width: 210, alignment: .leading).lineLimit(1).truncationMode(.middle)
-                Text(value.isEmpty ? "—" : value).font(Theme.mono(11.5)).foregroundStyle(Theme.fgMuted)
+                Text(shown).font(Theme.mono(11.5)).foregroundStyle(hidden ? Theme.dim : Theme.fgMuted)
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).lineLimit(1).truncationMode(.middle)
+                if secret && !value.isEmpty {
+                    Button { toggleReveal(key) } label: {
+                        Image(systemName: revealedEnv.contains(key) ? "eye.slash" : "eye").font(.system(size: 10))
+                    }.buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Reveal value")
+                }
                 if !value.isEmpty { CopyMini(text: value) }
                 Text(badge).font(.system(size: 9.5, weight: .medium)).foregroundStyle(badgeColor)
                     .padding(.horizontal, 6).padding(.vertical, 2)
@@ -401,6 +413,10 @@ struct EnvInspector: View {
             .padding(.horizontal, 20).padding(.vertical, 5)
             Divider().overlay(Theme.borderSoft.opacity(0.35)).padding(.leading, 20)
         }
+    }
+
+    private func toggleReveal(_ key: String) {
+        if revealedEnv.contains(key) { revealedEnv.remove(key) } else { revealedEnv.insert(key) }
     }
 
     private func sourceText(_ s: String) -> String {
@@ -443,6 +459,10 @@ struct EnvInspector: View {
         if let d = PomJSON.decode(CfgExplainResp.self, from: resp) {
             if !d.repos.isEmpty { repos = d.repos }
             explain = d.explain
+            errText = d.explain == nil ? (String(data: resp, encoding: .utf8) ?? "no data").prefix(300).description : ""
+        } else {
+            explain = nil
+            errText = "decode failed: " + (String(data: resp, encoding: .utf8) ?? "").prefix(300).description
         }
     }
 }
@@ -454,6 +474,7 @@ private struct CfgFilesResp: Decodable { var files: [CfgFile] = [] }
 struct AdvancedSettings: View {
     @EnvironmentObject var state: AppState
     @State private var files: [CfgFile] = []
+    @State private var nodes: [ConfigNode] = []
     @State private var path = ""            // selected file
     @State private var text = ""
     @State private var original = ""
@@ -461,24 +482,73 @@ struct AdvancedSettings: View {
     @State private var busy = false
     @State private var showExport = false
     @State private var showImport = false
+    @State private var showNew = false
+    @State private var newName = ""
+    @State private var newError = ""
     @StateObject private var doctor = DoctorViewModel()
 
     private var dirty: Bool { text != original }
 
     var body: some View {
-        VStack(spacing: 0) {
-            toolbar
-            if state.agentModel != nil { agentBanner; Divider().overlay(Theme.borderSoft) }
+        HStack(spacing: 0) {
+            sidebar.frame(width: 220)
             Divider().overlay(Theme.borderSoft)
-            YAMLEditor(text: $text)
-                .background(Theme.bg)
-            Divider().overlay(Theme.borderSoft)
-            ConfigDoctorBar(vm: doctor)
+            VStack(spacing: 0) {
+                toolbar
+                if state.agentModel != nil { agentBanner; Divider().overlay(Theme.borderSoft) }
+                Divider().overlay(Theme.borderSoft)
+                YAMLEditor(text: $text)
+                    .background(Theme.bg)
+                Divider().overlay(Theme.borderSoft)
+                ConfigDoctorBar(vm: doctor)
+            }
         }
         .task { await load() }
         .sheet(isPresented: $showExport) { ExportBundleSheet() }
         .sheet(isPresented: $showImport, onDismiss: { Task { await load() } }) { ImportBundleSheet().environmentObject(state) }
+        .sheet(isPresented: $showNew) { newFileSheet }
         .onChange(of: state.agentModel == nil) { if state.agentModel == nil { Task { await load() } } }
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(nodes) { node in
+                        ConfigNodeRow(node: node, depth: 0, selected: path) { p in
+                            path = p
+                            Task { await loadFile() }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
+            }
+            Divider().overlay(Theme.borderSoft)
+            Button { newName = ""; newError = ""; showNew = true } label: {
+                Label("New file", systemImage: "plus").font(.system(size: 11.5))
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 8)
+        }
+        .background(Theme.bgSoft)
+    }
+
+    private var newFileSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("New config fragment").font(.system(size: 13, weight: .semibold))
+            Text("Created under pom.d/ and merged into pom.yml.").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+            TextField("services.yml", text: $newName).textFieldStyle(.roundedBorder).frame(width: 260)
+            if !newError.isEmpty { Text(newError).font(.system(size: 11)).foregroundStyle(Theme.danger) }
+            HStack {
+                Spacer()
+                Button("Cancel") { showNew = false }.keyboardShortcut(.cancelAction)
+                Button("Create") { Task { await createFile() } }
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20).frame(width: 320)
     }
 
     private var agentBanner: some View {
@@ -499,11 +569,8 @@ struct AdvancedSettings: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Picker("", selection: $path) {
-                ForEach(files, id: \.path) { Text($0.name).tag($0.path) }
-            }
-            .labelsHidden().frame(maxWidth: 320)
-            .onChange(of: path) { Task { await loadFile() } }
+            Text(path.isEmpty ? "No file" : (path as NSString).lastPathComponent)
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.fg).lineLimit(1)
             if !status.isEmpty { Text(status).font(.system(size: 11)).foregroundStyle(Theme.fgMuted).lineLimit(1) }
             Spacer()
             if busy { ProgressView().controlSize(.small) }
@@ -523,6 +590,7 @@ struct AdvancedSettings: View {
         let d = await Task.detached { PomCore.shared.configFilesData() }.value
         if let r = PomJSON.decode(CfgFilesResp.self, from: d) {
             files = r.files
+            nodes = ConfigTree.build(r.files.map { .init(rel: $0.name, path: $0.path) })
             if path.isEmpty { path = r.files.first?.path ?? "" }
         }
         await loadFile()
@@ -536,6 +604,18 @@ struct AdvancedSettings: View {
         let p = path
         let d = await Task.detached { PomCore.shared.configFileGetData(path: p) }.value
         if let r = PomJSON.decode(Doc.self, from: d) { text = r.yaml; original = r.yaml; status = "" }
+    }
+
+    private func createFile() async {
+        let name = newName.trimmingCharacters(in: .whitespaces)
+        let d = await Task.detached { PomCore.shared.configFileCreate(name: name, yaml: "") }.value
+        struct R: Decodable { var ok = false; var error = ""; var path = "" }
+        let r = PomJSON.decode(R.self, from: d)
+        guard let r, r.ok else { newError = r?.error ?? "create failed"; return }
+        showNew = false
+        await load()
+        path = r.path
+        await loadFile()
     }
 
     private func save() async {

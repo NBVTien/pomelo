@@ -16,6 +16,11 @@ import (
 // member app (with Dir set); otherwise a single root-level stack.
 func DetectRepo(root string) []StackFacts {
 	rules := loadRules()
+	if exists(root, "nx.json") {
+		if m := nxMembers(root); len(m) > 0 {
+			return m
+		}
+	}
 	members := monorepoMembers(root)
 	var out []StackFacts
 	// A repo can be an app at its root AND have workspace members (e.g. a Rails
@@ -71,9 +76,9 @@ func monorepoMembers(root string) []string {
 				continue
 			}
 			if f, ok := Detect(m); ok {
-				// A frameworkless JS package in a workspace is a library, not a
-				// runnable service — skip it (keeps next/vite/nest/... apps only).
-				if f.Language == "js" && f.Framework == "" {
+				// Skip JS libraries (frameworkless, or an importable main/module/
+				// exports entrypoint) — a workspace keeps apps, not packages.
+				if f.Language == "js" && (f.Framework == "" || isJSLibrary(m)) {
 					continue
 				}
 				seen[rel] = true
@@ -108,9 +113,65 @@ func workspaceGlobs(root string) []string {
 		return []string{"apps/*", "packages/*"}
 	}
 	if exists(root, "nx.json") {
+		// nx marks projects with a project.json at any depth; discover them
+		// rather than assuming apps/libs. Fall back to the classic layout.
+		if p := nxProjects(root); len(p) > 0 {
+			return p
+		}
 		return []string{"apps/*", "libs/*", "packages/*"}
 	}
 	return nil
+}
+
+// nxProjects returns the relative dir of every project.json under root (nx's
+// project marker), skipping vendored/build trees and bounding the walk depth.
+func nxProjects(root string) []string {
+	skip := map[string]bool{"node_modules": true, ".git": true, "dist": true, "build": true, "coverage": true, "tmp": true, ".nx": true}
+	var out []string
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path == root {
+				return nil
+			}
+			if skip[d.Name()] {
+				return filepath.SkipDir
+			}
+			rel, _ := filepath.Rel(root, path)
+			if strings.Count(rel, string(filepath.Separator)) >= 4 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "project.json" {
+			return nil
+		}
+		if rel, err := filepath.Rel(root, filepath.Dir(path)); err == nil && rel != "." {
+			out = append(out, rel)
+		}
+		return nil
+	})
+	return out
+}
+
+// isJSLibrary reports whether a package.json declares an importable entrypoint
+// (main/module/exports) — the mark of a library, not a runnable app.
+func isJSLibrary(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Main    string          `json:"main"`
+		Module  string          `json:"module"`
+		Exports json.RawMessage `json:"exports"`
+	}
+	if json.Unmarshal(data, &pkg) != nil {
+		return false
+	}
+	return pkg.Main != "" || pkg.Module != "" || len(pkg.Exports) > 0
 }
 
 func exists(root, name string) bool {

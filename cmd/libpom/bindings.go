@@ -82,6 +82,33 @@ func PomNMStoreList() *C.char {
 	return bindingJSON(s.NMStoreList())
 }
 
+//export PomNMStoreReconcile
+func PomNMStoreReconcile() *C.char {
+	s := server()
+	if s == nil {
+		return C.CString(`{"ok":false}`)
+	}
+	return bindingJSON(s.NMStoreReconcile())
+}
+
+//export PomNMStoreReclaim
+func PomNMStoreReclaim() *C.char {
+	s := server()
+	if s == nil {
+		return C.CString(`{"ok":false}`)
+	}
+	return bindingJSON(s.NMStoreReclaim())
+}
+
+//export PomNMStoreProgress
+func PomNMStoreProgress() *C.char {
+	s := server()
+	if s == nil {
+		return C.CString("")
+	}
+	return C.CString(s.NMStoreProgress())
+}
+
 //export PomNMStoreDelete
 func PomNMStoreDelete(repo, hash *C.char) *C.char {
 	s := server()
@@ -474,6 +501,24 @@ func PomConfigFileSet(path, yaml *C.char, dry C.int) *C.char {
 		return C.CString(`{"ok":false}`)
 	}
 	return bindingJSON(s.ConfigFileSet(C.GoString(path), C.GoString(yaml), dry != 0))
+}
+
+//export PomConfigFileCreate
+func PomConfigFileCreate(name, yaml *C.char) *C.char {
+	s := server()
+	if s == nil {
+		return C.CString(`{"ok":false}`)
+	}
+	return bindingJSON(s.ConfigFileCreate(C.GoString(name), C.GoString(yaml)))
+}
+
+//export PomInstallDeps
+func PomInstallDeps(branch *C.char, isMain C.int) *C.char {
+	s := server()
+	if s == nil {
+		return C.CString(`{"ok":false}`)
+	}
+	return bindingJSON(s.InstallDeps(C.GoString(branch), isMain != 0))
 }
 
 //export PomConfigReload

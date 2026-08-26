@@ -90,6 +90,16 @@ final class PomCore: @unchecked Sendable {
         }}
     }
     @discardableResult
+    func configFileCreate(name: String, yaml: String) -> Data {
+        name.withCString { n in yaml.withCString { y in
+            cstr(PomConfigFileCreate(UnsafeMutablePointer(mutating: n), UnsafeMutablePointer(mutating: y)))
+        }}
+    }
+    @discardableResult
+    func installDeps(branch: String, isMain: Bool) -> Data {
+        branch.withCString { b in cstr(PomInstallDeps(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0)) }
+    }
+    @discardableResult
     func configReload() -> Data { cstr(PomConfigReload()) }
 
     func nmStoreListData() -> Data {
@@ -104,6 +114,24 @@ final class PomCore: @unchecked Sendable {
             defer { PomFree(out) }
             return Data(String(cString: out).utf8)
         }}
+    }
+
+    func nmStoreReconcile() -> Data {
+        guard let out = PomNMStoreReconcile() else { return Data() }
+        defer { PomFree(out) }
+        return Data(String(cString: out).utf8)
+    }
+
+    func nmStoreReclaim() -> Data {
+        guard let out = PomNMStoreReclaim() else { return Data() }
+        defer { PomFree(out) }
+        return Data(String(cString: out).utf8)
+    }
+
+    func nmStoreProgress() -> String {
+        guard let out = PomNMStoreProgress() else { return "" }
+        defer { PomFree(out) }
+        return String(cString: out)
     }
 
     func syncGetData() -> Data {
