@@ -183,12 +183,13 @@ struct HeaderTrailing: View {
     @EnvironmentObject var theme: ThemeManager
     @EnvironmentObject var state: AppState
     private var icon: String {
-        switch theme.mode { case .dark: return "moon.fill"; case .light: return "sun.max.fill"; case .sepia: return "book.fill" }
+        switch theme.mode { case .dark: return "moon.fill"; case .light: return "sun.max.fill"; case .sepia: return "sun.haze.fill" }
     }
     var body: some View {
         HStack(spacing: 12) {
             if state.agentModel != nil { agentChip }
             if state.onboardModel != nil && state.onboardBranch == nil { onboardChip }
+            ClaudeUsageChip()
             Button { state.showShared = true } label: { Image(systemName: "cylinder.split.1x2").font(.system(size: 12)) }
                 .buttonStyle(.plain).tooltip("Shared services", shortcut: "⇧⌘S", align: .bottomTrailing)
             Button { state.showDependencies = true } label: { Image(systemName: "shippingbox").font(.system(size: 12)) }
