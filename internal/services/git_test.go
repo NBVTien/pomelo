@@ -55,35 +55,53 @@ func TestCreateWorktreeRecoversStaleRegistration(t *testing.T) {
 }
 
 // A teammate pushing to the same branch must not show up as local work.
+// initRemote builds a bare origin plus one clone holding a single commit on
+// `branch`. Every branch name is passed explicitly: CI has no
+// init.defaultBranch, so anything inherited from config differs from a dev box.
+func initRemote(t *testing.T, root, branch string) (remote, clone string) {
+	t.Helper()
+	remote = filepath.Join(root, "remote.git")
+	gitRun(t, root, "init", "-q", "--bare", "--initial-branch="+branch, "remote.git")
+
+	clone = filepath.Join(root, "mine")
+	gitRun(t, root, "clone", "-q", remote, "mine")
+	gitRun(t, clone, "checkout", "-q", "-B", branch)
+	writeFile(t, clone, "f.txt", "line1\n")
+	gitRun(t, clone, "add", ".")
+	gitRun(t, clone, "commit", "-q", "-m", "init")
+	gitRun(t, clone, "push", "-q", "-u", "origin", branch)
+	return remote, clone
+}
+
+// teammatePush clones the remote fresh and pushes one commit to branch.
+func teammatePush(t *testing.T, root, remote, branch, name, content string) {
+	t.Helper()
+	dir := filepath.Join(root, "theirs")
+	gitRun(t, root, "clone", "-q", "--branch", branch, remote, "theirs")
+	writeFile(t, dir, name, content)
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-q", "-m", "teammate work")
+	gitRun(t, dir, "push", "-q", "origin", branch)
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A teammate pushing to the same branch must not show up as local work.
 func TestUnpushedBaseIgnoresUpstreamOnlyCommits(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	root := t.TempDir()
-	remote := filepath.Join(root, "remote.git")
-	gitRun(t, root, "init", "-q", "--bare", "remote.git")
+	remote, mine := initRemote(t, root, "main")
 
-	mine := filepath.Join(root, "mine")
-	gitRun(t, root, "clone", "-q", remote, "mine")
-	if err := os.WriteFile(filepath.Join(mine, "f.txt"), []byte("line1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, mine, "add", ".")
-	gitRun(t, mine, "commit", "-q", "-m", "init")
-	gitRun(t, mine, "branch", "-M", "main")
-	gitRun(t, mine, "push", "-q", "-u", "origin", "main")
+	teammatePush(t, root, remote, "main", "f.txt", "line1\ntheirs\n")
 
-	theirs := filepath.Join(root, "theirs")
-	gitRun(t, root, "clone", "-q", remote, "theirs")
-	if err := os.WriteFile(filepath.Join(theirs, "f.txt"), []byte("line1\ntheirs\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, theirs, "commit", "-q", "-am", "teammate work")
-	gitRun(t, theirs, "push", "-q", "origin", "main")
-
-	if err := os.WriteFile(filepath.Join(mine, "f.txt"), []byte("line1\nmine\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, mine, "f.txt", "line1\nmine\n")
 	gitRun(t, mine, "commit", "-q", "-am", "my work")
 	gitRun(t, mine, "fetch", "-q", "origin")
 
@@ -100,22 +118,9 @@ func TestUnpushedBaseIncludesWorktreeChanges(t *testing.T) {
 		t.Skip("git not available")
 	}
 	root := t.TempDir()
-	remote := filepath.Join(root, "remote.git")
-	gitRun(t, root, "init", "-q", "--bare", "remote.git")
+	_, wt := initRemote(t, root, "main")
 
-	wt := filepath.Join(root, "wt")
-	gitRun(t, root, "clone", "-q", remote, "wt")
-	if err := os.WriteFile(filepath.Join(wt, "f.txt"), []byte("line1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, wt, "add", ".")
-	gitRun(t, wt, "commit", "-q", "-m", "init")
-	gitRun(t, wt, "branch", "-M", "main")
-	gitRun(t, wt, "push", "-q", "-u", "origin", "main")
-
-	if err := os.WriteFile(filepath.Join(wt, "f.txt"), []byte("line1\nuncommitted\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, wt, "f.txt", "line1\nuncommitted\n")
 
 	base := UnpushedBase("main", wt)
 	files, ins, _ := LocalChangeStat(base, wt)
@@ -129,32 +134,15 @@ func TestUpstreamBehindCountsTeammateCommits(t *testing.T) {
 		t.Skip("git not available")
 	}
 	root := t.TempDir()
-	remote := filepath.Join(root, "remote.git")
-	gitRun(t, root, "init", "-q", "--bare", "remote.git")
-
-	mine := filepath.Join(root, "mine")
-	gitRun(t, root, "clone", "-q", remote, "mine")
-	if err := os.WriteFile(filepath.Join(mine, "f.txt"), []byte("line1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, mine, "add", ".")
-	gitRun(t, mine, "commit", "-q", "-m", "init")
-	gitRun(t, mine, "branch", "-M", "main")
-	gitRun(t, mine, "push", "-q", "-u", "origin", "main")
+	remote, mine := initRemote(t, root, "main")
 
 	if n := UpstreamBehind(mine); n != 0 {
 		t.Fatalf("in sync should be 0 behind, got %d", n)
 	}
 
-	theirs := filepath.Join(root, "theirs")
-	gitRun(t, root, "clone", "-q", remote, "theirs")
-	if err := os.WriteFile(filepath.Join(theirs, "f.txt"), []byte("line1\ntheirs\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, theirs, "commit", "-q", "-am", "teammate work")
-	gitRun(t, theirs, "push", "-q", "origin", "main")
-
+	teammatePush(t, root, remote, "main", "f.txt", "line1\ntheirs\n")
 	gitRun(t, mine, "fetch", "-q", "origin")
+
 	if n := UpstreamBehind(mine); n != 1 {
 		t.Fatalf("want 1 behind after teammate push, got %d", n)
 	}
@@ -167,34 +155,15 @@ func TestLocalChangeStatIsFetchIndependent(t *testing.T) {
 		t.Skip("git not available")
 	}
 	root := t.TempDir()
-	remote := filepath.Join(root, "remote.git")
-	gitRun(t, root, "init", "-q", "--bare", "remote.git")
+	remote, mine := initRemote(t, root, "main")
 
-	mine := filepath.Join(root, "mine")
-	gitRun(t, root, "clone", "-q", remote, "mine")
-	if err := os.WriteFile(filepath.Join(mine, "f.txt"), []byte("line1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, mine, "add", ".")
-	gitRun(t, mine, "commit", "-q", "-m", "init")
-	gitRun(t, mine, "branch", "-M", "main")
-	gitRun(t, mine, "push", "-q", "-u", "origin", "main")
-	if err := os.WriteFile(filepath.Join(mine, "f.txt"), []byte("line1\nmine\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, mine, "f.txt", "line1\nmine\n")
 	gitRun(t, mine, "commit", "-q", "-am", "my work")
 
 	before := UnpushedBase("main", mine)
 	_, insBefore, _ := LocalChangeStat(before, mine)
 
-	theirs := filepath.Join(root, "theirs")
-	gitRun(t, root, "clone", "-q", remote, "theirs")
-	if err := os.WriteFile(filepath.Join(theirs, "g.txt"), []byte("theirs\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, theirs, "add", ".")
-	gitRun(t, theirs, "commit", "-q", "-m", "teammate work")
-	gitRun(t, theirs, "push", "-q", "origin", "main")
+	teammatePush(t, root, remote, "main", "g.txt", "theirs\n")
 	gitRun(t, mine, "fetch", "-q", "origin")
 
 	after := UnpushedBase("main", mine)
