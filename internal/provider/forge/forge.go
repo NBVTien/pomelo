@@ -94,6 +94,9 @@ func (s *Feature) WarmLoop() {
 					fetched[repo.Name] = true
 					fetchDefault(defBranch(s.cfg(), repo.Name), wt)
 				}
+				// Per worktree, not once per repo: each branch has its own upstream,
+				// and a stale one hides commits a teammate pushed to that branch.
+				services.FetchUpstream(wt)
 				if p, ok := prPairFor(repo.Name, wt); ok {
 					pairs = append(pairs, p)
 				}

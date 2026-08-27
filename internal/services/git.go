@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -55,35 +54,21 @@ func UnpushedBase(defaultBranch, wt string) string {
 	return MergeBase(BaseRef(defaultBranch, wt), wt)
 }
 
-var upstreamFetches sync.Map // worktree -> time.Time of last attempt
-
-const upstreamFetchEvery = time.Minute
-
-// FetchUpstreamAsync refreshes the branch's own remote-tracking ref in the
-// background, so UpstreamBehind can see commits others pushed — origin/<branch>
-// otherwise only moves on a manual fetch. Throttled and detached: a poll must
-// never wait on the network.
-func FetchUpstreamAsync(wt string) {
-	now := time.Now()
-	if last, ok := upstreamFetches.Load(wt); ok {
-		if t, ok := last.(time.Time); ok && now.Sub(t) < upstreamFetchEvery {
-			return
-		}
+// FetchUpstream refreshes the branch's own remote-tracking ref so UpstreamBehind
+// can see commits others pushed — origin/<branch> otherwise only moves on a
+// manual fetch. Call it from a background loop; it blocks on the network.
+func FetchUpstream(wt string) {
+	out, err := RunTimeout(5*time.Second, wt, "git", "rev-parse", "--abbrev-ref",
+		"--symbolic-full-name", "@{upstream}")
+	if err != nil {
+		return
 	}
-	upstreamFetches.Store(wt, now)
-	go func() {
-		out, err := RunTimeout(5*time.Second, wt, "git", "rev-parse", "--abbrev-ref",
-			"--symbolic-full-name", "@{upstream}")
-		if err != nil {
-			return
-		}
-		remote, branch, ok := strings.Cut(strings.TrimSpace(string(out)), "/")
-		if !ok || remote == "" || branch == "" {
-			return
-		}
-		// Best-effort: offline or unreachable leaves the stale ref in place.
-		_, _ = RunTimeout(20*time.Second, wt, "git", "fetch", "--quiet", remote, branch)
-	}()
+	remote, branch, ok := strings.Cut(strings.TrimSpace(string(out)), "/")
+	if !ok || remote == "" || branch == "" {
+		return
+	}
+	// Best-effort: offline or unreachable leaves the stale ref in place.
+	_, _ = RunTimeout(20*time.Second, wt, "git", "fetch", "--quiet", remote, branch)
 }
 
 func LocalChangeStat(base, wt string) (files, insertions, deletions int) {

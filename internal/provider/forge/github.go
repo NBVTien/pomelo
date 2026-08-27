@@ -519,9 +519,8 @@ func (s *Feature) WorkspaceLocalChanges(branch string, isMain bool) []byte {
 		}
 		base := services.UnpushedBase(defBranch(s.cfg(), name), wt)
 		files, ins, del := services.LocalChangeStat(base, wt)
-		// Only the behind count needs the remote: the local stat is measured
-		// against a merge-base, which a teammate's push cannot move.
-		services.FetchUpstreamAsync(wt)
+		// Reads the ref WarmLoop refreshes; the local stat is measured against a
+		// merge-base, which a teammate's push cannot move.
 		behind := services.UpstreamBehind(wt)
 		// A repo with no local edits still matters when upstream moved ahead.
 		if files == 0 && behind == 0 {
