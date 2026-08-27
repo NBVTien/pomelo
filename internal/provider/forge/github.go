@@ -237,7 +237,7 @@ func (s *Feature) handleDiff(w http.ResponseWriter, r *http.Request) {
 func (s *Feature) Diff(branch, repo string, isMain bool) ([]byte, error) {
 	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
 	base := services.BaseRef(defBranch(s.cfg(), repo), wt)
-	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", base+"...HEAD")
+	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", "-M", base+"...HEAD")
 	if err != nil {
 		return nil, err
 	}
@@ -550,7 +550,7 @@ func (s *Feature) handleLocalDiff(w http.ResponseWriter, r *http.Request) {
 func (s *Feature) LocalDiff(branch, repo string, isMain bool) ([]byte, error) {
 	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
 	base := services.UnpushedBase(defBranch(s.cfg(), repo), wt)
-	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", base)
+	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", "-M", base)
 	if err != nil {
 		return nil, err
 	}

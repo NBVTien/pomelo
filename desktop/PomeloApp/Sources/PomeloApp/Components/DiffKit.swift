@@ -18,7 +18,41 @@ struct DiffFile: Identifiable, Sendable {
     var dels: Int = 0
     var binary = false
     var lines: [DiffLine] = []
+    var headerOldPath: String = ""
     var id: String { path }
+
+    var isRename: Bool { status == "R" || status == "C" }
+
+    /// Longest common directory prefix of old and new path, so a rename can be
+    /// shown as `dir/{old => new}` instead of two near-identical full paths.
+    var renameParts: (prefix: String, from: String, to: String)? {
+        guard isRename, let old = oldPath, old != path else { return nil }
+        let a = old.split(separator: "/").map(String.init)
+        let b = path.split(separator: "/").map(String.init)
+        var i = 0
+        while i < a.count - 1 && i < b.count - 1 && a[i] == b[i] { i += 1 }
+        let prefix = i == 0 ? "" : a[0..<i].joined(separator: "/") + "/"
+        return (prefix, a[i...].joined(separator: "/"), b[i...].joined(separator: "/"))
+    }
+}
+
+/// Splits a `diff --git a/x b/y` header. Cannot split on spaces — paths may
+/// contain them — so the boundary is the last " b/" leaving a well-formed `a/`.
+func gitHeaderPaths(_ body: String) -> (String, String) {
+    let s = Array(body)
+    var candidates: [Int] = []
+    if s.count > 3 {
+        for i in 0...(s.count - 3) where s[i] == " " && s[i + 1] == "b" && s[i + 2] == "/" {
+            candidates.append(i)
+        }
+    }
+    for i in candidates.reversed() {
+        let left = String(s[0..<i]), right = String(s[(i + 1)...])
+        if left.hasPrefix("a/") && right.hasPrefix("b/") {
+            return (String(left.dropFirst(2)), String(right.dropFirst(2)))
+        }
+    }
+    return ("", "")
 }
 
 enum DiffParser {
@@ -32,18 +66,23 @@ enum DiffParser {
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
             if raw.hasPrefix("diff --git ") {
                 flush()
-                let parts = raw.dropFirst("diff --git ".count).split(separator: " ")
-                var p = ""
-                if parts.count == 2 { p = String(parts[1].dropFirst(2)) }
-                cur = DiffFile(path: p, status: "M")
+                let (a, b) = gitHeaderPaths(String(raw.dropFirst("diff --git ".count)))
+                cur = DiffFile(path: b, oldPath: nil, status: "M")
+                cur?.headerOldPath = a
                 oldN = 0; newN = 0
                 continue
             }
             guard cur != nil else { continue }
             if raw.hasPrefix("new file") { cur?.status = "A"; continue }
-            if raw.hasPrefix("deleted file") { cur?.status = "D"; continue }
+            if raw.hasPrefix("deleted file") {
+                cur?.status = "D"
+                if let h = cur?.headerOldPath, !h.isEmpty { cur?.path = h }
+                continue
+            }
             if raw.hasPrefix("rename from ") { cur?.oldPath = String(raw.dropFirst("rename from ".count)); cur?.status = "R"; continue }
-            if raw.hasPrefix("rename to ") { cur?.path = String(raw.dropFirst("rename to ".count)); continue }
+            if raw.hasPrefix("rename to ") { cur?.path = String(raw.dropFirst("rename to ".count)); cur?.status = "R"; continue }
+            if raw.hasPrefix("copy from ") { cur?.oldPath = String(raw.dropFirst("copy from ".count)); cur?.status = "C"; continue }
+            if raw.hasPrefix("copy to ") { cur?.path = String(raw.dropFirst("copy to ".count)); cur?.status = "C"; continue }
             if raw.hasPrefix("Binary files") { cur?.binary = true; continue }
             if raw.hasPrefix("--- ") { continue }
             if raw.hasPrefix("+++ ") {
@@ -58,6 +97,8 @@ enum DiffParser {
                 cur?.lines.append(DiffLine(id: lid, kind: .hunk, oldN: nil, newN: nil, text: raw))
                 continue
             }
+            // Trailing blank from the final newline, before any hunk: not a context line.
+            if raw.isEmpty, cur?.lines.isEmpty ?? true { continue }
             let first = raw.first
             lid += 1
             switch first {
@@ -89,7 +130,7 @@ enum DiffParser {
 }
 
 final class FileTreeNode: Identifiable {
-    let id: String
+    var id: String
     var name: String
     let file: DiffFile?
     var children: [FileTreeNode] = []
@@ -115,16 +156,20 @@ enum FileTreeBuilder {
                 }
             }
         }
-        collapse(root)
+        // Collapse the children, not the root: a chain folded into the root itself
+        // (`apps/portal/src`) would be dropped when only root.children is returned.
+        for child in root.children { collapse(child) }
         sort(root)
         return root.children
     }
 
+    // Fold single-child chains into one row (`a/b/c`) to save indent. `id` stays
+    // the full path — it keys the collapse state.
     private static func collapse(_ node: FileTreeNode) {
         for child in node.children { collapse(child) }
         while node.children.count == 1, let only = node.children.first, !only.isLeaf {
-            only.name = node.name.isEmpty ? only.name : "\(node.name)/\(only.name)"
-            node.name = only.name
+            node.name = node.name.isEmpty ? only.name : "\(node.name)/\(only.name)"
+            node.id = only.id
             node.children = only.children
         }
     }
@@ -143,14 +188,18 @@ struct DiffFileList: View {
     let files: [DiffFile]
     @Binding var selected: String?
     @State private var collapsed: Set<String> = []
-
-    private var tree: [FileTreeNode] { FileTreeBuilder.build(files) }
+    // Built once per file list: recomputing it every render reallocates the whole
+    // node graph.
+    @State private var tree: [FileTreeNode] = []
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
                 ForEach(flattened(tree, depth: 0), id: \.node.id) { entry in row(entry.node, depth: entry.depth) }
             }.padding(6)
+        }
+        .task(id: files.map(\.id).joined(separator: "\n")) {
+            tree = FileTreeBuilder.build(files)
         }
     }
 
@@ -171,15 +220,14 @@ struct DiffFileList: View {
                 HStack(spacing: 7) {
                     Text(f.status).font(Theme.mono(9.5, .bold)).foregroundStyle(statusColor(f.status))
                         .frame(width: 12)
-                    Text(node.name).font(.system(size: 11.5)).foregroundStyle(Theme.fg).lineLimit(1)
+                    Text(node.name).font(.system(size: 11.5)).foregroundStyle(Theme.fg)
+                        .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
-                    if f.adds > 0 { Text("+\(f.adds)").font(Theme.mono(9.5)).foregroundStyle(Theme.ok) }
-                    if f.dels > 0 { Text("-\(f.dels)").font(Theme.mono(9.5)).foregroundStyle(Theme.danger) }
                 }
-                .padding(.leading, CGFloat(depth) * 14).padding(.horizontal, 8).padding(.vertical, 5)
+                .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
                 .background(selected == f.path ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
-                .tooltip(f.path)
+                .tooltip(leafTooltip(f, label: node.name))
             }.buttonStyle(.plain)
         } else {
             let isCollapsed = collapsed.contains(node.id)
@@ -189,14 +237,29 @@ struct DiffFileList: View {
                         .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.dim)
                         .frame(width: 10)
                     Image(systemName: "folder.fill").font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
-                    Text(node.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.fgMuted).lineLimit(1)
+                    Text(node.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.fgMuted)
+                        .lineLimit(1).truncationMode(.head).layoutPriority(1)
                     Spacer(minLength: 4)
                 }
-                .padding(.leading, CGFloat(depth) * 14).padding(.horizontal, 8).padding(.vertical, 5)
+                .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
                 .contentShape(Rectangle())
                 .tooltip(node.name)
             }.buttonStyle(.plain)
         }
+    }
+
+    // The row sits under its folder rows, so the label alone is enough — repeating
+    // the full repo path is noise. A rename also shows where the file came from.
+    private func leafTooltip(_ f: DiffFile, label: String) -> String {
+        guard let r = f.renameParts else { return label }
+        return "\(r.from)\n→ \(r.to)"
+    }
+
+    // Indent tapers past a few levels so deep trees keep room for the filename.
+    private func indent(_ depth: Int) -> CGFloat {
+        let full = min(depth, 4)
+        let extra = max(0, depth - 4)
+        return CGFloat(full) * 12 + CGFloat(extra) * 5
     }
 
     private func toggle(_ id: String) {
@@ -225,14 +288,20 @@ struct DiffFilesView: View {
                 } else {
                     HStack(spacing: 0) {
                         if filesTreeVisible {
-                            DiffFileList(files: files, selected: $selFile).frame(width: 220)
+                            DiffFileList(files: files, selected: $selFile).frame(width: 260)
                             Divider().overlay(Theme.borderSoft)
                         }
                         VStack(spacing: 0) {
                             diffModeBar(path: selFile)
                             Divider().overlay(Theme.borderSoft)
                             if let f = files.first(where: { $0.path == selFile }) {
-                                if splitDiff { DiffFileView(file: f) } else { NativeDiffView(file: f, isDark: theme.mode == .dark) }
+                                if f.lines.isEmpty && !f.binary {
+                                    renamedPlaceholder(f)
+                                } else if splitDiff {
+                                    DiffFileView(file: f)
+                                } else {
+                                    NativeDiffView(file: f, isDark: theme.mode == .dark)
+                                }
                             } else {
                                 centered("Select a file")
                             }
@@ -246,20 +315,43 @@ struct DiffFilesView: View {
     }
 
     private func diffModeBar(path: String?) -> some View {
-        HStack(spacing: 4) {
+        let file = files?.first { $0.path == path }
+        return HStack(spacing: 4) {
             Button { withAnimation(.easeInOut(duration: 0.14)) { filesTreeVisible.toggle() } } label: {
                 Image(systemName: "sidebar.left").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
             }.buttonStyle(.plain).help(filesTreeVisible ? "Hide file list" : "Show file list")
-            if let path {
-                Text(path).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted).lineLimit(1).truncationMode(.head)
+            if let r = file?.renameParts {
+                VStack(alignment: .leading, spacing: 1) {
+                    pathLine(r.prefix + r.from, icon: "minus", color: Theme.danger, dim: true)
+                    pathLine(r.prefix + r.to, icon: "plus", color: Theme.ok, dim: false)
+                }
+                .layoutPriority(1)
+            } else if let path {
+                Text(path).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted).lineLimit(1).truncationMode(.middle)
                     .textSelection(.enabled)
             }
             Spacer()
+            if let f = file, f.adds > 0 || f.dels > 0 {
+                HStack(spacing: 6) {
+                    if f.adds > 0 { Text("+\(f.adds)").foregroundStyle(Theme.ok) }
+                    if f.dels > 0 { Text("-\(f.dels)").foregroundStyle(Theme.danger) }
+                }
+                .font(Theme.mono(10.5)).lineLimit(1).fixedSize()
+                .padding(.trailing, 4)
+            }
             modeBtn("Unified", "list.bullet", on: !splitDiff) { splitDiff = false }
             modeBtn("Split", "rectangle.split.2x1", on: splitDiff) { splitDiff = true }
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(Theme.bgSoft)
+    }
+
+    private func pathLine(_ path: String, icon: String, color: Color, dim: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 8, weight: .bold)).foregroundStyle(color).frame(width: 8)
+            Text(path).font(Theme.mono(10.5)).foregroundStyle(dim ? Theme.dim : Theme.fgMuted)
+                .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+        }
     }
 
     private func modeBtn(_ label: String, _ icon: String, on: Bool, _ act: @escaping () -> Void) -> some View {
@@ -269,6 +361,26 @@ struct DiffFilesView: View {
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
         }.buttonStyle(.plain)
+    }
+
+    @ViewBuilder private func renamedPlaceholder(_ f: DiffFile) -> some View {
+        if let r = f.renameParts {
+            VStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.turn.up.right.diamond")
+                    .font(.system(size: 22)).foregroundStyle(Theme.dim)
+                Text("Renamed — no content changes").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                VStack(spacing: 3) {
+                    Text(r.prefix + r.from).foregroundStyle(Theme.dim)
+                    Text(r.prefix + r.to).foregroundStyle(Theme.fgMuted)
+                }
+                .font(Theme.mono(11)).textSelection(.enabled)
+                .multilineTextAlignment(.center)
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            centered("No changes to display")
+        }
     }
 
     private func centered(_ s: String) -> some View {

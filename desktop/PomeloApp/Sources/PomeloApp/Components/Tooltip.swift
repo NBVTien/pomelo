@@ -31,7 +31,7 @@ struct TooltipModifier: ViewModifier {
         content
             .onHover { hovering in
                 owner.pending?.cancel()
-                if hovering {
+                if hovering && !label.isEmpty {
                     let id = owner.id
                     let w = DispatchWorkItem { [weak state] in
                         state?.active = TooltipState.Active(ownerID: id, label: label, shortcut: shortcut, align: align, anchor: owner.anchor!)
