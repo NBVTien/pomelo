@@ -46,6 +46,8 @@ func (s *Feature) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/repo/pr/detail", s.handlePRDetail)
 	mux.HandleFunc("/api/repo/pr/comments", s.handlePRReviewComments)
 	mux.HandleFunc("/api/repo/diff", s.handleDiff)
+	mux.HandleFunc("/api/workspace/local-changes", s.handleLocalChanges)
+	mux.HandleFunc("/api/repo/local-diff", s.handleLocalDiff)
 }
 
 var _ plugin.HTTPProvider = (*Feature)(nil)

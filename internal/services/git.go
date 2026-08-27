@@ -30,6 +30,58 @@ func BaseRef(defaultBranch, wtPath string) string {
 	return branch
 }
 
+func MergeBase(base, wt string) string {
+	out, err := exec.Command("git", "-C", wt, "merge-base", base, "HEAD").Output()
+	if err != nil {
+		return base
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// UnpushedBase returns the ref to diff HEAD against to see only unpushed
+// local work: the branch's own upstream tracking ref if one exists,
+// otherwise the merge-base with defaultBranch (branch never pushed).
+func UnpushedBase(defaultBranch, wt string) string {
+	if out, err := exec.Command("git", "-C", wt, "rev-parse", "--abbrev-ref",
+		"--symbolic-full-name", "@{upstream}").Output(); err == nil {
+		if up := strings.TrimSpace(string(out)); up != "" {
+			return up
+		}
+	}
+	return MergeBase(BaseRef(defaultBranch, wt), wt)
+}
+
+func LocalChangeStat(base, wt string) (files, insertions, deletions int) {
+	out, err := exec.Command("git", "-C", wt, "diff", "--shortstat", base).Output()
+	if err != nil {
+		return 0, 0, 0
+	}
+	return parseShortstat(string(out))
+}
+
+func parseShortstat(s string) (files, insertions, deletions int) {
+	for _, part := range strings.Split(strings.TrimSpace(s), ",") {
+		part = strings.TrimSpace(part)
+		fields := strings.Fields(part)
+		if len(fields) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		switch {
+		case strings.Contains(part, "file"):
+			files = n
+		case strings.Contains(part, "insertion"):
+			insertions = n
+		case strings.Contains(part, "deletion"):
+			deletions = n
+		}
+	}
+	return files, insertions, deletions
+}
+
 func AheadBehind(defaultBranch, wt string) (ahead, behind int) {
 	base := BaseRef(defaultBranch, wt)
 	out, err := exec.Command("git", "-C", wt, "rev-list", "--left-right", "--count", base+"...HEAD").Output()

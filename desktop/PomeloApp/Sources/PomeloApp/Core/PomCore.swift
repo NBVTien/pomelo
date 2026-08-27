@@ -340,6 +340,14 @@ final class PomCore: @unchecked Sendable {
             cstr(PomPRDiff(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), isMain ? 1 : 0))
         }}
     }
+    func localChangesData(branch: String, isMain: Bool) -> Data {
+        branch.withCString { b in cstr(PomWorkspaceLocalChanges(UnsafeMutablePointer(mutating: b), isMain ? 1 : 0)) }
+    }
+    func localDiffData(branch: String, repo: String, isMain: Bool) -> Data {
+        branch.withCString { b in repo.withCString { r in
+            cstr(PomLocalDiff(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: r), isMain ? 1 : 0))
+        }}
+    }
     func jiraTest(site: String, email: String, token: String) -> Data {
         site.withCString { s in email.withCString { e in token.withCString { t in
             cstr(PomJiraTest(UnsafeMutablePointer(mutating: s), UnsafeMutablePointer(mutating: e), UnsafeMutablePointer(mutating: t)))
