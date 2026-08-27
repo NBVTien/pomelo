@@ -88,36 +88,192 @@ enum DiffParser {
     }
 }
 
+final class FileTreeNode: Identifiable {
+    let id: String
+    var name: String
+    let file: DiffFile?
+    var children: [FileTreeNode] = []
+    init(id: String, name: String, file: DiffFile? = nil) { self.id = id; self.name = name; self.file = file }
+    var isLeaf: Bool { file != nil }
+}
+
+enum FileTreeBuilder {
+    static func build(_ files: [DiffFile]) -> [FileTreeNode] {
+        let root = FileTreeNode(id: "", name: "")
+        for f in files {
+            var node = root
+            let parts = f.path.split(separator: "/").map(String.init)
+            for (i, part) in parts.enumerated() {
+                let isLast = i == parts.count - 1
+                if let existing = node.children.first(where: { $0.name == part && $0.isLeaf == isLast }) {
+                    node = existing
+                } else {
+                    let childID = node.id.isEmpty ? part : "\(node.id)/\(part)"
+                    let child = FileTreeNode(id: childID, name: part, file: isLast ? f : nil)
+                    node.children.append(child)
+                    node = child
+                }
+            }
+        }
+        collapse(root)
+        sort(root)
+        return root.children
+    }
+
+    private static func collapse(_ node: FileTreeNode) {
+        for child in node.children { collapse(child) }
+        while node.children.count == 1, let only = node.children.first, !only.isLeaf {
+            only.name = node.name.isEmpty ? only.name : "\(node.name)/\(only.name)"
+            node.name = only.name
+            node.children = only.children
+        }
+    }
+
+    private static func sort(_ node: FileTreeNode) {
+        node.children.sort { a, b in
+            if a.isLeaf != b.isLeaf { return !a.isLeaf }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+        for child in node.children { sort(child) }
+    }
+}
+
 struct DiffFileList: View {
     @EnvironmentObject var theme: ThemeManager
     let files: [DiffFile]
     @Binding var selected: String?
+    @State private var collapsed: Set<String> = []
+
+    private var tree: [FileTreeNode] { FileTreeBuilder.build(files) }
 
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 1) {
-                ForEach(files) { f in
-                    Button { selected = f.path } label: {
-                        HStack(spacing: 7) {
-                            Text(f.status).font(Theme.mono(9.5, .bold)).foregroundStyle(statusColor(f.status))
-                                .frame(width: 12)
-                            Text(fileName(f.path)).font(.system(size: 11.5)).foregroundStyle(Theme.fg).lineLimit(1)
-                            Spacer(minLength: 4)
-                            if f.adds > 0 { Text("+\(f.adds)").font(Theme.mono(9.5)).foregroundStyle(Theme.ok) }
-                            if f.dels > 0 { Text("-\(f.dels)").font(Theme.mono(9.5)).foregroundStyle(Theme.danger) }
-                        }
-                        .padding(.horizontal, 8).padding(.vertical, 5)
-                        .background(selected == f.path ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
-                        .contentShape(Rectangle())
-                        .help(f.path)
-                    }.buttonStyle(.plain)
-                }
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(flattened(tree, depth: 0), id: \.node.id) { entry in row(entry.node, depth: entry.depth) }
             }.padding(6)
         }
     }
-    private func fileName(_ p: String) -> String { p.split(separator: "/").last.map(String.init) ?? p }
+
+    private func flattened(_ nodes: [FileTreeNode], depth: Int) -> [(node: FileTreeNode, depth: Int)] {
+        var out: [(node: FileTreeNode, depth: Int)] = []
+        for node in nodes {
+            out.append((node, depth))
+            if !node.isLeaf && !collapsed.contains(node.id) {
+                out.append(contentsOf: flattened(node.children, depth: depth + 1))
+            }
+        }
+        return out
+    }
+
+    @ViewBuilder private func row(_ node: FileTreeNode, depth: Int) -> some View {
+        if let f = node.file {
+            Button { selected = f.path } label: {
+                HStack(spacing: 7) {
+                    Text(f.status).font(Theme.mono(9.5, .bold)).foregroundStyle(statusColor(f.status))
+                        .frame(width: 12)
+                    Text(node.name).font(.system(size: 11.5)).foregroundStyle(Theme.fg).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if f.adds > 0 { Text("+\(f.adds)").font(Theme.mono(9.5)).foregroundStyle(Theme.ok) }
+                    if f.dels > 0 { Text("-\(f.dels)").font(Theme.mono(9.5)).foregroundStyle(Theme.danger) }
+                }
+                .padding(.leading, CGFloat(depth) * 14).padding(.horizontal, 8).padding(.vertical, 5)
+                .background(selected == f.path ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+                .tooltip(f.path)
+            }.buttonStyle(.plain)
+        } else {
+            let isCollapsed = collapsed.contains(node.id)
+            Button { toggle(node.id) } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.dim)
+                        .frame(width: 10)
+                    Image(systemName: "folder.fill").font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
+                    Text(node.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.fgMuted).lineLimit(1)
+                    Spacer(minLength: 4)
+                }
+                .padding(.leading, CGFloat(depth) * 14).padding(.horizontal, 8).padding(.vertical, 5)
+                .contentShape(Rectangle())
+                .tooltip(node.name)
+            }.buttonStyle(.plain)
+        }
+    }
+
+    private func toggle(_ id: String) {
+        if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
+    }
+
     private func statusColor(_ s: String) -> Color {
         switch s { case "A": return Theme.ok; case "D": return Theme.danger; case "R": return Theme.accent; default: return Theme.warn }
+    }
+}
+
+struct DiffFilesView: View {
+    @EnvironmentObject var theme: ThemeManager
+    let files: [DiffFile]?
+    @Binding var selFile: String?
+    @Binding var filesTreeVisible: Bool
+    @Binding var splitDiff: Bool
+    let loadingLabel: String
+    let emptyLabel: String
+
+    var body: some View {
+        Group {
+            if let files {
+                if files.isEmpty {
+                    centered(emptyLabel)
+                } else {
+                    HStack(spacing: 0) {
+                        if filesTreeVisible {
+                            DiffFileList(files: files, selected: $selFile).frame(width: 220)
+                            Divider().overlay(Theme.borderSoft)
+                        }
+                        VStack(spacing: 0) {
+                            diffModeBar(path: selFile)
+                            Divider().overlay(Theme.borderSoft)
+                            if let f = files.first(where: { $0.path == selFile }) {
+                                if splitDiff { DiffFileView(file: f) } else { NativeDiffView(file: f, isDark: theme.mode == .dark) }
+                            } else {
+                                centered("Select a file")
+                            }
+                        }
+                    }
+                }
+            } else {
+                centered(loadingLabel)
+            }
+        }
+    }
+
+    private func diffModeBar(path: String?) -> some View {
+        HStack(spacing: 4) {
+            Button { withAnimation(.easeInOut(duration: 0.14)) { filesTreeVisible.toggle() } } label: {
+                Image(systemName: "sidebar.left").font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
+            }.buttonStyle(.plain).help(filesTreeVisible ? "Hide file list" : "Show file list")
+            if let path {
+                Text(path).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted).lineLimit(1).truncationMode(.head)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            modeBtn("Unified", "list.bullet", on: !splitDiff) { splitDiff = false }
+            modeBtn("Split", "rectangle.split.2x1", on: splitDiff) { splitDiff = true }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(Theme.bgSoft)
+    }
+
+    private func modeBtn(_ label: String, _ icon: String, on: Bool, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            HStack(spacing: 4) { Image(systemName: icon).font(.system(size: 10)); Text(label).font(.system(size: 11)) }
+                .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
+        }.buttonStyle(.plain)
+    }
+
+    private func centered(_ s: String) -> some View {
+        Text(s).font(.system(size: 12)).foregroundStyle(Theme.dim)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -377,6 +533,8 @@ struct NativeDiffView: NSViewRepresentable {
         tv.lineKinds = built.kinds
         tv.lineStarts = built.starts
         tv.textStorage?.setAttributedString(built.string)
+        if let tc = tv.textContainer { tv.layoutManager?.ensureLayout(for: tc) }
+        tv.needsDisplay = true
     }
 
     final class Coord { var textView: DiffTextView?; var path = "" }

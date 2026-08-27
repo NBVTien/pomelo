@@ -484,3 +484,78 @@ func (s *Feature) WorkspacePRs(branch string, isMain bool) []byte {
 	b, _ := json.Marshal(map[string]any{"prs": out})
 	return b
 }
+
+func (s *Feature) handleLocalChanges(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		http.Error(w, "missing branch", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(s.WorkspaceLocalChanges(branch, r.URL.Query().Get("is_main") == "true"))
+}
+
+func (s *Feature) WorkspaceLocalChanges(branch string, isMain bool) []byte {
+	if s.cfg() == nil {
+		return []byte(`{"repos":[]}`)
+	}
+	type repoChange struct {
+		Repo       string `json:"repo"`
+		Alias      string `json:"alias"`
+		Files      int    `json:"files"`
+		Insertions int    `json:"insertions"`
+		Deletions  int    `json:"deletions"`
+	}
+	var out []repoChange
+	for _, name := range s.cfg().RepoOrder {
+		dir, ok := s.cfg().Repos[name]
+		if !ok {
+			continue
+		}
+		wt := services.RepoWorktreePath(s.WorkspaceRoot, name, branch, isMain)
+		if st, err := os.Stat(wt); err != nil || !st.IsDir() {
+			continue
+		}
+		base := services.UnpushedBase(defBranch(s.cfg(), name), wt)
+		files, ins, del := services.LocalChangeStat(base, wt)
+		if files == 0 {
+			continue
+		}
+		alias := dir.Alias
+		if alias == "" {
+			alias = name
+		}
+		out = append(out, repoChange{Repo: name, Alias: alias, Files: files, Insertions: ins, Deletions: del})
+	}
+	b, _ := json.Marshal(map[string]any{"repos": out})
+	return b
+}
+
+func (s *Feature) handleLocalDiff(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	repo := r.URL.Query().Get("repo")
+	if branch == "" || repo == "" {
+		httpx.Err(w, http.StatusBadRequest, "missing branch/repo")
+		return
+	}
+	out, err := s.LocalDiff(branch, repo, r.URL.Query().Get("is_main") == "true")
+	if err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "git diff failed")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write(out)
+}
+
+func (s *Feature) LocalDiff(branch, repo string, isMain bool) ([]byte, error) {
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	base := services.UnpushedBase(defBranch(s.cfg(), repo), wt)
+	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", base)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > maxDiffBytes {
+		return append(out[:maxDiffBytes], []byte("\n… diff truncated (too large)\n")...), nil
+	}
+	return out, nil
+}

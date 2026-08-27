@@ -9,6 +9,15 @@ struct WorkspacePR: Decodable, Identifiable, Equatable {
     var id: String { repo }
 }
 
+struct LocalChangeRepo: Decodable, Identifiable, Equatable {
+    let repo: String
+    let alias: String
+    var files: Int = 0
+    var insertions: Int = 0
+    var deletions: Int = 0
+    var id: String { repo }
+}
+
 struct PRInfo: Decodable, Equatable {
     let number: Int
     let title: String
@@ -148,22 +157,32 @@ struct PRsBoard: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
 
+    enum Selection: Equatable { case pr(String), local(String) }
+
     @State private var prs: [WorkspacePR] = []
-    @State private var selected: String?
+    @State private var localChanges: [LocalChangeRepo] = []
+    @State private var selection: Selection?
     @State private var loading = true
     @State private var pollTask: Task<Void, Never>?
     @AppStorage("prs.masterWidth") private var masterWidth = 320.0
-
-    private var selectedItem: WorkspacePR? { prs.first { $0.repo == selected } }
+    @AppStorage("prs.sectionExpanded") private var sectionExpanded = true
+    @AppStorage("prs.localSectionExpanded") private var localSectionExpanded = true
 
     var body: some View {
         HStack(spacing: 0) {
             master.frame(width: masterWidth)
             SplitHandle(axis: .horizontal, value: $masterWidth, min: 220, max: 640)
             Group {
-                if let it = selectedItem {
-                    PRDetail(item: it, branch: workspace.branch, isMain: workspace.isMain).id(it.repo)
-                } else {
+                switch selection {
+                case .pr(let repo):
+                    if let it = prs.first(where: { $0.repo == repo }) {
+                        PRDetail(item: it, branch: workspace.branch, isMain: workspace.isMain).id("pr:\(it.repo)")
+                    } else { emptyDetail }
+                case .local(let repo):
+                    if let it = localChanges.first(where: { $0.repo == repo }) {
+                        LocalChangesDetail(item: it, branch: workspace.branch, isMain: workspace.isMain).id("local:\(it.repo)")
+                    } else { emptyDetail }
+                case nil:
                     emptyDetail
                 }
             }
@@ -176,37 +195,90 @@ struct PRsBoard: View {
 
     private var master: some View {
         VStack(spacing: 0) {
+            localChangesSection
+            prSection
+        }
+        .background(Theme.bgSoft)
+    }
+
+    @ViewBuilder private var localChangesSection: some View {
+        Button { withAnimation(.easeInOut(duration: 0.14)) { localSectionExpanded.toggle() } } label: {
             HStack(spacing: 8) {
-                Text("PULL REQUESTS").font(.system(size: 10.5, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
-                if loading { ProgressView().controlSize(.mini) }
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.muted)
+                    .rotationEffect(.degrees(localSectionExpanded ? 90 : 0))
+                Text("LOCAL CHANGES").font(.system(size: 10.5, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
+                if !localChanges.isEmpty {
+                    Text("\(localChanges.count)").font(Theme.mono(9.5)).foregroundStyle(Theme.fgMuted)
+                        .padding(.horizontal, 5).padding(.vertical, 1).background(Theme.dim.opacity(0.15), in: Capsule())
+                }
                 Spacer()
-                Button { Task { await load() } } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
-                }.buttonStyle(.plain).help("Refresh")
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+        .background(Theme.bgSoft)
+        Divider().overlay(Theme.borderSoft)
+
+        if localSectionExpanded {
+            if localChanges.isEmpty {
+                Text("No local changes").font(.system(size: 12)).foregroundStyle(Theme.dim)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+            } else {
+                LazyVStack(spacing: 4) {
+                    ForEach(localChanges) { item in
+                        LocalChangeRow(item: item, active: selection == .local(item.repo))
+                            .contentShape(Rectangle())
+                            .onTapGesture { selection = .local(item.repo) }
+                    }
+                }
+                .padding(8)
+            }
+        }
+    }
+
+    private var prSection: some View {
+        VStack(spacing: 0) {
+            Button { withAnimation(.easeInOut(duration: 0.14)) { sectionExpanded.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.muted)
+                        .rotationEffect(.degrees(sectionExpanded ? 90 : 0))
+                    Text("PULL REQUESTS").font(.system(size: 10.5, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
+                    if loading { ProgressView().controlSize(.mini) }
+                    Spacer()
+                    Button { Task { await load() } } label: {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
+                    }.buttonStyle(.plain).help("Refresh")
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }.buttonStyle(.plain)
             .background(Theme.bgSoft)
             Divider().overlay(Theme.borderSoft)
 
-            if prs.isEmpty && !loading {
-                VStack(spacing: 8) {
-                    Image(systemName: "arrow.triangle.pull").font(.system(size: 26)).foregroundStyle(Theme.dim)
-                    Text("No pull requests").font(.system(size: 12.5)).foregroundStyle(Theme.fgMuted)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(prs) { item in
-                            PRRow(item: item, active: item.repo == selected)
-                                .contentShape(Rectangle())
-                                .onTapGesture { selected = item.repo }
+            if sectionExpanded {
+                if prs.isEmpty && !loading {
+                    VStack(spacing: 8) {
+                        Image(systemName: "arrow.triangle.pull").font(.system(size: 26)).foregroundStyle(Theme.dim)
+                        Text("No pull requests").font(.system(size: 12.5)).foregroundStyle(Theme.fgMuted)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(prs) { item in
+                                PRRow(item: item, active: selection == .pr(item.repo))
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { selection = .pr(item.repo) }
+                            }
                         }
+                        .padding(8)
                     }
-                    .padding(8)
                 }
+            } else {
+                Spacer(minLength: 0)
             }
         }
-        .background(Theme.bgSoft)
     }
 
     private var emptyDetail: some View {
@@ -218,14 +290,30 @@ struct PRsBoard: View {
 
     private func load() async {
         let branch = workspace.branch, isMain = workspace.isMain
-        let fresh = await Task.detached(priority: .userInitiated) { () -> [WorkspacePR]? in
+        async let prsFetch: [WorkspacePR]? = Task.detached(priority: .userInitiated) {
             let d = PomCore.shared.prWorkspaceData(branch: branch, isMain: isMain)
             struct R: Decodable { let prs: [WorkspacePR]? }
             return (PomJSON.decode(R.self, from: d))?.prs
         }.value
+        async let localFetch: [LocalChangeRepo]? = Task.detached(priority: .userInitiated) {
+            let d = PomCore.shared.localChangesData(branch: branch, isMain: isMain)
+            struct R: Decodable { let repos: [LocalChangeRepo]? }
+            return (PomJSON.decode(R.self, from: d))?.repos
+        }.value
+        let (freshPRs, freshLocal) = await (prsFetch, localFetch)
         loading = false
-        if let fresh, fresh != prs { prs = fresh }
-        if !prs.contains(where: { $0.repo == selected }) { selected = prs.first?.repo }
+        if let freshPRs, freshPRs != prs { prs = freshPRs }
+        if let freshLocal, freshLocal != localChanges { localChanges = freshLocal }
+        switch selection {
+        case .pr(let repo) where !prs.contains(where: { $0.repo == repo }):
+            selection = prs.first.map { .pr($0.repo) }
+        case .local(let repo) where !localChanges.contains(where: { $0.repo == repo }):
+            selection = prs.first.map { .pr($0.repo) }
+        case nil:
+            selection = prs.first.map { .pr($0.repo) }
+        default:
+            break
+        }
     }
 
     private func startPolling() {
@@ -320,6 +408,74 @@ struct PRRow: View {
     }
 }
 
+struct LocalChangeRow: View {
+    @EnvironmentObject var theme: ThemeManager
+    let item: LocalChangeRepo
+    let active: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Circle().fill(Theme.warn).frame(width: 8, height: 8).padding(.top, 3)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.alias).font(Theme.mono(11.5, .medium)).foregroundStyle(Theme.fg)
+                HStack(spacing: 6) {
+                    Text("\(item.files)").font(Theme.mono(10.5)).foregroundStyle(Theme.fgMuted)
+                    Text("+\(item.insertions)").font(Theme.mono(10)).foregroundStyle(Theme.ok)
+                    Text("-\(item.deletions)").font(Theme.mono(10)).foregroundStyle(Theme.danger)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 7)
+        .background(active ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 7))
+    }
+}
+
+struct LocalChangesDetail: View {
+    @EnvironmentObject var theme: ThemeManager
+    let item: LocalChangeRepo
+    let branch: String
+    let isMain: Bool
+
+    @State private var diffFiles: [DiffFile]?
+    @State private var selFile: String?
+    @State private var splitDiff = false
+    @AppStorage("prs.filesTreeVisible") private var filesTreeVisible = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider().overlay(Theme.borderSoft)
+            DiffFilesView(files: diffFiles, selFile: $selFile, filesTreeVisible: $filesTreeVisible, splitDiff: $splitDiff,
+                          loadingLabel: "loading diff…", emptyLabel: "No local changes")
+        }
+        .task(id: item.repo) { await loadDiff() }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("local").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.warn)
+                .padding(.horizontal, 7).padding(.vertical, 2).background(Theme.warn.opacity(0.15), in: Capsule())
+            Text(item.alias).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.fg)
+            Spacer()
+            Text("+\(item.insertions)").font(Theme.mono(11)).foregroundStyle(Theme.ok)
+            Text("-\(item.deletions)").font(Theme.mono(11)).foregroundStyle(Theme.danger)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    private func loadDiff() async {
+        guard diffFiles == nil else { return }
+        let repo = item.repo
+        let files = await Task.detached(priority: .userInitiated) { () -> [DiffFile] in
+            let text = String(decoding: PomCore.shared.localDiffData(branch: branch, repo: repo, isMain: isMain), as: UTF8.self)
+            return DiffParser.parse(text)
+        }.value
+        diffFiles = files
+        if selFile == nil { selFile = files.first?.path }
+    }
+}
+
 struct PRDetail: View {
     @EnvironmentObject var theme: ThemeManager
     let item: WorkspacePR
@@ -332,6 +488,7 @@ struct PRDetail: View {
     @State private var diffFiles: [DiffFile]?
     @State private var selFile: String?
     @State private var splitDiff = false
+    @AppStorage("prs.filesTreeVisible") private var filesTreeVisible = true
     @State private var commits: [PRCommit]?
     @State private var reviewComments: [PRReviewComment]?
     @State private var loadingDetail = true
@@ -494,48 +651,9 @@ struct PRDetail: View {
     }
 
     @ViewBuilder private var filesTab: some View {
-        Group {
-            if let files = diffFiles {
-                if files.isEmpty {
-                    centered("No file changes")
-                } else {
-                    HStack(spacing: 0) {
-                        DiffFileList(files: files, selected: $selFile).frame(width: 220)
-                        Divider().overlay(Theme.borderSoft)
-                        VStack(spacing: 0) {
-                            diffModeBar
-                            Divider().overlay(Theme.borderSoft)
-                            if let f = files.first(where: { $0.path == selFile }) {
-                                if splitDiff { DiffFileView(file: f) } else { NativeDiffView(file: f, isDark: theme.mode == .dark) }
-                            } else {
-                                centered("Select a file")
-                            }
-                        }
-                    }
-                }
-            } else {
-                centered("loading diff…")
-            }
-        }
-        .task(id: item.repo) { await loadDiff() }
-    }
-
-    private var diffModeBar: some View {
-        HStack(spacing: 4) {
-            Spacer()
-            modeBtn("Unified", "list.bullet", on: !splitDiff) { splitDiff = false }
-            modeBtn("Split", "rectangle.split.2x1", on: splitDiff) { splitDiff = true }
-        }
-        .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(Theme.bgSoft)
-    }
-    private func modeBtn(_ label: String, _ icon: String, on: Bool, _ act: @escaping () -> Void) -> some View {
-        Button(action: act) {
-            HStack(spacing: 4) { Image(systemName: icon).font(.system(size: 10)); Text(label).font(.system(size: 11)) }
-                .foregroundStyle(on ? Theme.accent : Theme.fgMuted)
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(on ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
-        }.buttonStyle(.plain)
+        DiffFilesView(files: diffFiles, selFile: $selFile, filesTreeVisible: $filesTreeVisible, splitDiff: $splitDiff,
+                      loadingLabel: "loading diff…", emptyLabel: "No file changes")
+            .task(id: item.repo) { await loadDiff() }
     }
 
     @ViewBuilder private var checksTab: some View {

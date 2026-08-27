@@ -709,6 +709,28 @@ func PomPRDiff(branch, repo *C.char, isMain C.int) *C.char {
 	return bindingBytes(out)
 }
 
+//export PomWorkspaceLocalChanges
+func PomWorkspaceLocalChanges(branch *C.char, isMain C.int) *C.char {
+	s := server()
+	if s == nil {
+		return C.CString(`{"repos":[]}`)
+	}
+	return bindingBytes(s.WorkspaceLocalChanges(C.GoString(branch), isMain != 0))
+}
+
+//export PomLocalDiff
+func PomLocalDiff(branch, repo *C.char, isMain C.int) *C.char {
+	s := server()
+	if s == nil {
+		return C.CString("")
+	}
+	out, err := s.LocalDiff(C.GoString(branch), C.GoString(repo), isMain != 0)
+	if err != nil {
+		return C.CString("")
+	}
+	return bindingBytes(out)
+}
+
 //export PomGithubTest
 func PomGithubTest(token *C.char) *C.char {
 	s := server()

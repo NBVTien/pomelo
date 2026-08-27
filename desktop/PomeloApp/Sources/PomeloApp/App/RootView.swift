@@ -30,6 +30,7 @@ struct RootView: View {
                     }
                 }
             }
+            .overlay(TooltipOverlay().zIndex(2000))
             .animation(.easeOut(duration: 0.14), value: state.prPeek)
             .background(
                 Button("") { StreamManager.shared.clearActive() }   // ⌘K clears the active terminal
