@@ -237,7 +237,7 @@ func (s *Feature) handleDiff(w http.ResponseWriter, r *http.Request) {
 func (s *Feature) Diff(branch, repo string, isMain bool) ([]byte, error) {
 	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
 	base := services.BaseRef(defBranch(s.cfg(), repo), wt)
-	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", base+"...HEAD")
+	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", "-M", base+"...HEAD")
 	if err != nil {
 		return nil, err
 	}
@@ -505,6 +505,7 @@ func (s *Feature) WorkspaceLocalChanges(branch string, isMain bool) []byte {
 		Files      int    `json:"files"`
 		Insertions int    `json:"insertions"`
 		Deletions  int    `json:"deletions"`
+		Behind     int    `json:"behind"`
 	}
 	var out []repoChange
 	for _, name := range s.cfg().RepoOrder {
@@ -518,14 +519,18 @@ func (s *Feature) WorkspaceLocalChanges(branch string, isMain bool) []byte {
 		}
 		base := services.UnpushedBase(defBranch(s.cfg(), name), wt)
 		files, ins, del := services.LocalChangeStat(base, wt)
-		if files == 0 {
+		// Reads the ref WarmLoop refreshes; the local stat is measured against a
+		// merge-base, which a teammate's push cannot move.
+		behind := services.UpstreamBehind(wt)
+		// A repo with no local edits still matters when upstream moved ahead.
+		if files == 0 && behind == 0 {
 			continue
 		}
 		alias := dir.Alias
 		if alias == "" {
 			alias = name
 		}
-		out = append(out, repoChange{Repo: name, Alias: alias, Files: files, Insertions: ins, Deletions: del})
+		out = append(out, repoChange{Repo: name, Alias: alias, Files: files, Insertions: ins, Deletions: del, Behind: behind})
 	}
 	b, _ := json.Marshal(map[string]any{"repos": out})
 	return b
@@ -550,7 +555,7 @@ func (s *Feature) handleLocalDiff(w http.ResponseWriter, r *http.Request) {
 func (s *Feature) LocalDiff(branch, repo string, isMain bool) ([]byte, error) {
 	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
 	base := services.UnpushedBase(defBranch(s.cfg(), repo), wt)
-	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", base)
+	out, err := services.RunTimeout(10*time.Second, wt, "git", "diff", "-M", base)
 	if err != nil {
 		return nil, err
 	}

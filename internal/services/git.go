@@ -39,16 +39,36 @@ func MergeBase(base, wt string) string {
 }
 
 // UnpushedBase returns the ref to diff HEAD against to see only unpushed
-// local work: the branch's own upstream tracking ref if one exists,
+// local work: the merge-base with the branch's own upstream if one exists,
 // otherwise the merge-base with defaultBranch (branch never pushed).
+//
+// The merge-base, not the upstream ref itself: diffing against the tip would
+// report commits someone else pushed as local deletions.
 func UnpushedBase(defaultBranch, wt string) string {
 	if out, err := exec.Command("git", "-C", wt, "rev-parse", "--abbrev-ref",
 		"--symbolic-full-name", "@{upstream}").Output(); err == nil {
 		if up := strings.TrimSpace(string(out)); up != "" {
-			return up
+			return MergeBase(up, wt)
 		}
 	}
 	return MergeBase(BaseRef(defaultBranch, wt), wt)
+}
+
+// FetchUpstream refreshes the branch's own remote-tracking ref so UpstreamBehind
+// can see commits others pushed — origin/<branch> otherwise only moves on a
+// manual fetch. Call it from a background loop; it blocks on the network.
+func FetchUpstream(wt string) {
+	out, err := RunTimeout(5*time.Second, wt, "git", "rev-parse", "--abbrev-ref",
+		"--symbolic-full-name", "@{upstream}")
+	if err != nil {
+		return
+	}
+	remote, branch, ok := strings.Cut(strings.TrimSpace(string(out)), "/")
+	if !ok || remote == "" || branch == "" {
+		return
+	}
+	// Best-effort: offline or unreachable leaves the stale ref in place.
+	_, _ = RunTimeout(20*time.Second, wt, "git", "fetch", "--quiet", remote, branch)
 }
 
 func LocalChangeStat(base, wt string) (files, insertions, deletions int) {
@@ -80,6 +100,20 @@ func parseShortstat(s string) (files, insertions, deletions int) {
 		}
 	}
 	return files, insertions, deletions
+}
+
+// UpstreamBehind counts commits on the branch's own upstream that HEAD lacks —
+// someone else pushed to this branch and the local copy needs updating.
+func UpstreamBehind(wt string) int {
+	out, err := exec.Command("git", "-C", wt, "rev-list", "--count", "HEAD..@{upstream}").Output()
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func AheadBehind(defaultBranch, wt string) (ahead, behind int) {
