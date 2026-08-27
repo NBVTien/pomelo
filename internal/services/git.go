@@ -60,9 +60,9 @@ var upstreamFetches sync.Map // worktree -> time.Time of last attempt
 const upstreamFetchEvery = time.Minute
 
 // FetchUpstreamAsync refreshes the branch's own remote-tracking ref in the
-// background. Without it origin/<branch> only moves on a manual fetch, so
-// local-change counts are computed against whatever the remote looked like when
-// it was last pulled. Throttled and detached: a poll must never wait on network.
+// background, so UpstreamBehind can see commits others pushed — origin/<branch>
+// otherwise only moves on a manual fetch. Throttled and detached: a poll must
+// never wait on the network.
 func FetchUpstreamAsync(wt string) {
 	now := time.Now()
 	if last, ok := upstreamFetches.Load(wt); ok {

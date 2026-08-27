@@ -159,3 +159,47 @@ func TestUpstreamBehindCountsTeammateCommits(t *testing.T) {
 		t.Fatalf("want 1 behind after teammate push, got %d", n)
 	}
 }
+
+// The local stat is measured against a merge-base, so a teammate's push cannot
+// change it — with or without a fetch. Only UpstreamBehind needs the remote.
+func TestLocalChangeStatIsFetchIndependent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	gitRun(t, root, "init", "-q", "--bare", "remote.git")
+
+	mine := filepath.Join(root, "mine")
+	gitRun(t, root, "clone", "-q", remote, "mine")
+	if err := os.WriteFile(filepath.Join(mine, "f.txt"), []byte("line1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, mine, "add", ".")
+	gitRun(t, mine, "commit", "-q", "-m", "init")
+	gitRun(t, mine, "branch", "-M", "main")
+	gitRun(t, mine, "push", "-q", "-u", "origin", "main")
+	if err := os.WriteFile(filepath.Join(mine, "f.txt"), []byte("line1\nmine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, mine, "commit", "-q", "-am", "my work")
+
+	before := UnpushedBase("main", mine)
+	_, insBefore, _ := LocalChangeStat(before, mine)
+
+	theirs := filepath.Join(root, "theirs")
+	gitRun(t, root, "clone", "-q", remote, "theirs")
+	if err := os.WriteFile(filepath.Join(theirs, "g.txt"), []byte("theirs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, theirs, "add", ".")
+	gitRun(t, theirs, "commit", "-q", "-m", "teammate work")
+	gitRun(t, theirs, "push", "-q", "origin", "main")
+	gitRun(t, mine, "fetch", "-q", "origin")
+
+	after := UnpushedBase("main", mine)
+	_, insAfter, _ := LocalChangeStat(after, mine)
+	if insBefore != insAfter {
+		t.Fatalf("a teammate push changed the local count: %d -> %d", insBefore, insAfter)
+	}
+}
