@@ -6,6 +6,19 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-27
+
+### Fixed
+- Diff viewer: long lines scroll horizontally in both unified and split views instead of getting cut off, and the added/removed tint spans the full line. (#48)
+- Workspace sidebar scrolls smoothly; a fast flick no longer leaves a phantom blank gap below the list. (#50)
+- Shared services now hand out a connection URL on the port the container is actually published on, including capacity>1 services where a workspace is pinned to a second instance. (#50, #51)
+- Creating a workspace whose repo selection matches nothing now fails with a clear message instead of leaving an empty, unusable workspace. (#50)
+- Dependency board shows only the current project's caches and fits to the window when opened. (#48)
+- Diff view renders renames compactly and groups file-tree paths correctly. (#36)
+
+### Changed
+- Internal: the core-to-UI boundary is now data-routed through a few verbs (query/command/fetch/subscribe) instead of ~86 typed exports, and domain logic (PR status, diff parsing, dependency ordering, agent notifications) lives in the Go core per ADR 0001. No user-facing behavior change. (#39, #45, #48, #50, #52)
+
 ## [0.2.4] - 2026-08-27
 
 ### Fixed
