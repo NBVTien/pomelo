@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,16 +40,50 @@ func MergeBase(base, wt string) string {
 }
 
 // UnpushedBase returns the ref to diff HEAD against to see only unpushed
-// local work: the branch's own upstream tracking ref if one exists,
+// local work: the merge-base with the branch's own upstream if one exists,
 // otherwise the merge-base with defaultBranch (branch never pushed).
+//
+// The merge-base, not the upstream ref itself: diffing against the tip would
+// report commits someone else pushed as local deletions.
 func UnpushedBase(defaultBranch, wt string) string {
 	if out, err := exec.Command("git", "-C", wt, "rev-parse", "--abbrev-ref",
 		"--symbolic-full-name", "@{upstream}").Output(); err == nil {
 		if up := strings.TrimSpace(string(out)); up != "" {
-			return up
+			return MergeBase(up, wt)
 		}
 	}
 	return MergeBase(BaseRef(defaultBranch, wt), wt)
+}
+
+var upstreamFetches sync.Map // worktree -> time.Time of last attempt
+
+const upstreamFetchEvery = time.Minute
+
+// FetchUpstreamAsync refreshes the branch's own remote-tracking ref in the
+// background. Without it origin/<branch> only moves on a manual fetch, so
+// local-change counts are computed against whatever the remote looked like when
+// it was last pulled. Throttled and detached: a poll must never wait on network.
+func FetchUpstreamAsync(wt string) {
+	now := time.Now()
+	if last, ok := upstreamFetches.Load(wt); ok {
+		if t, ok := last.(time.Time); ok && now.Sub(t) < upstreamFetchEvery {
+			return
+		}
+	}
+	upstreamFetches.Store(wt, now)
+	go func() {
+		out, err := RunTimeout(5*time.Second, wt, "git", "rev-parse", "--abbrev-ref",
+			"--symbolic-full-name", "@{upstream}")
+		if err != nil {
+			return
+		}
+		remote, branch, ok := strings.Cut(strings.TrimSpace(string(out)), "/")
+		if !ok || remote == "" || branch == "" {
+			return
+		}
+		// Best-effort: offline or unreachable leaves the stale ref in place.
+		_, _ = RunTimeout(20*time.Second, wt, "git", "fetch", "--quiet", remote, branch)
+	}()
 }
 
 func LocalChangeStat(base, wt string) (files, insertions, deletions int) {
@@ -80,6 +115,20 @@ func parseShortstat(s string) (files, insertions, deletions int) {
 		}
 	}
 	return files, insertions, deletions
+}
+
+// UpstreamBehind counts commits on the branch's own upstream that HEAD lacks —
+// someone else pushed to this branch and the local copy needs updating.
+func UpstreamBehind(wt string) int {
+	out, err := exec.Command("git", "-C", wt, "rev-list", "--count", "HEAD..@{upstream}").Output()
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func AheadBehind(defaultBranch, wt string) (ahead, behind int) {

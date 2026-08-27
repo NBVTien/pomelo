@@ -15,6 +15,7 @@ struct LocalChangeRepo: Decodable, Identifiable, Equatable {
     var files: Int = 0
     var insertions: Int = 0
     var deletions: Int = 0
+    var behind: Int = 0
     var id: String { repo }
 }
 
@@ -415,14 +416,24 @@ struct LocalChangeRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
-            Circle().fill(Theme.warn).frame(width: 8, height: 8).padding(.top, 3)
+            Circle().fill(item.files > 0 ? Theme.warn : Theme.accent)
+                .frame(width: 8, height: 8).padding(.top, 3)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.alias).font(Theme.mono(11.5, .medium)).foregroundStyle(Theme.fg)
                 HStack(spacing: 6) {
-                    Text("\(item.files)").font(Theme.mono(10.5)).foregroundStyle(Theme.fgMuted)
-                    Text("+\(item.insertions)").font(Theme.mono(10)).foregroundStyle(Theme.ok)
-                    Text("-\(item.deletions)").font(Theme.mono(10)).foregroundStyle(Theme.danger)
+                    if item.files > 0 {
+                        Text("\(item.files)").font(Theme.mono(10.5)).foregroundStyle(Theme.fgMuted)
+                        Text("+\(item.insertions)").font(Theme.mono(10)).foregroundStyle(Theme.ok)
+                        Text("-\(item.deletions)").font(Theme.mono(10)).foregroundStyle(Theme.danger)
+                    }
                     Spacer(minLength: 0)
+                }
+                if item.behind > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.down.circle").font(.system(size: 9))
+                        Text("\(item.behind) behind — update from origin").font(.system(size: 10))
+                    }
+                    .foregroundStyle(Theme.warn)
                 }
             }
         }
