@@ -6,6 +6,11 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-28
+
+### Fixed
+- A running service no longer loses its allocated port when the process briefly stops accepting connections (e.g. a dev server reloading): the port is only reclaimed after it stays unreachable for a sustained window, so the dev-proxy keeps routing to it instead of falling back to a costly live scan that could spike CPU. (#56)
+
 ## [0.3.0] - 2026-08-28
 
 ### Added
