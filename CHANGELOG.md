@@ -6,6 +6,15 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-27
+
+### Added
+- Claude usage meter in the top bar: 5h session and weekly windows with a compact bar, color-coded by load. (#32)
+- PR view: a file tree with a local-changes sidebar, and tooltips across the app. (#33)
+
+### Changed
+- The compacting agent state now has its own distinct pulsing orb instead of a plain grey one. (#31)
+
 ## [0.2.1] - 2026-08-27
 
 ### Added
