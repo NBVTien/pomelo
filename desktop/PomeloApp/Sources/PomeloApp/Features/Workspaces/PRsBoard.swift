@@ -35,12 +35,13 @@ struct PRInfo: Decodable, Equatable {
     var changedFiles: Int?
     var author: Author?
     var reviews: [Review]?
+    var reviewLog: [ReviewEntry]?
     var reviewRequests: [ReviewRequest]?
     var comments: [Comment]?
     var labels: [Label]?
     var statusCheckRollup: [Check]?
 
-    struct Author: Decodable, Equatable { var login: String? }
+    struct Author: Decodable, Equatable { var login: String?; var avatarUrl: String? }
     struct ReviewRequest: Decodable, Equatable { var login: String?; var name: String?; var slug: String? }
 
     struct Reviewer: Decodable, Identifiable, Equatable { var name = ""; var state = ""; var id: String { name } }
@@ -68,6 +69,13 @@ struct PRInfo: Decodable, Equatable {
         var submittedAt: String?
         var id: String { (author?.login ?? "?") + (state ?? "") + (submittedAt ?? "") + String((body ?? "").prefix(12)) }
     }
+    struct ReviewEntry: Decodable, Equatable {
+        var reviewId: Int
+        var author: Author?
+        var state: String?
+        var body: String?
+        var submittedAt: String?
+    }
     struct Comment: Decodable, Equatable, Identifiable {
         var author: Author?
         var body: String?
@@ -93,8 +101,8 @@ struct PRCommit: Decodable, Identifiable, Equatable {
 }
 
 struct PRReviewComment: Decodable, Identifiable, Equatable {
-    var user: String?; var body: String?; var path: String?; var line: Int?
-    var diffHunk: String?; var createdAt: String?
+    var user: String?; var avatarUrl: String?; var body: String?; var path: String?; var line: Int?
+    var diffHunk: String?; var hunkLines: [DiffLine]?; var createdAt: String?; var reviewId: Int?
     var id: String { (user ?? "") + (path ?? "") + String(line ?? 0) + String((body ?? "").prefix(12)) }
 }
 
@@ -529,7 +537,7 @@ struct PRDetail: View {
                             ForEach(Array(commits.enumerated()), id: \.element.id) { i, c in
                                 commitRow(c, isFirst: i == 0, isLast: i == commits.count - 1)
                             }
-                        }.padding(.vertical, 8)
+                        }.padding(.vertical, 8).readingColumn()
                     }
                 }
             } else { centered("loading commits…") }
@@ -573,12 +581,13 @@ struct PRDetail: View {
                     Rectangle().fill(Theme.borderSoft).frame(height: 1)
                 }
                 if let body = pr?.body, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    MarkdownText(body)
+                    commentCard(author: pr?.author?.login, avatar: pr?.author?.avatarUrl, headline: "opened this pull request", body: body)
                 } else {
                     Text("No description.").font(.system(size: 12)).foregroundStyle(Theme.dim)
                 }
             }
             .padding(16)
+            .readingColumn()
         }
     }
 
@@ -616,78 +625,143 @@ struct PRDetail: View {
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(checks) { c in checkRow(c) }
-                }.padding(12)
+                }.padding(12).readingColumn()
             }
         } else { centered("No checks") }
     }
 
-    private struct Entry: Identifiable {
-        let id: String; let author: String?; let body: String
-        var tag: (String, Color)? = nil
-        var context: String? = nil    // "path:line" for inline review comments
-        var hunk: String? = nil
-        var eventOnly: Bool = false
-        let at: String
-    }
-    private var timeline: [Entry] {
-        guard let pr else { return [] }
-        var out: [Entry] = []
-        if let b = pr.body, !b.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            out.append(Entry(id: "body", author: pr.author?.login, body: b, at: ""))
-        }
-        for r in pr.reviews ?? [] {
-            let body = r.body ?? ""
-            if body.isEmpty {
-                if let tag = reviewTag(r.state) {
-                    out.append(Entry(id: r.id, author: r.author?.login, body: "\(tag.0) these changes",
-                                     tag: tag, eventOnly: true, at: r.submittedAt ?? ""))
-                }
-            } else {
-                out.append(Entry(id: r.id, author: r.author?.login, body: body, tag: reviewTag(r.state), at: r.submittedAt ?? ""))
-            }
-        }
-        for c in pr.comments ?? [] where !(c.body ?? "").isEmpty {
-            out.append(Entry(id: c.id, author: c.author?.login, body: c.body ?? "", at: c.createdAt ?? ""))
-        }
-        for rc in reviewComments ?? [] where !(rc.body ?? "").isEmpty {
-            let ctx = rc.path.map { "\($0)\(rc.line.map { ":\($0)" } ?? "")" }
-            out.append(Entry(id: rc.id, author: rc.user, body: rc.body ?? "", context: ctx, hunk: rc.diffHunk, at: rc.createdAt ?? ""))
-        }
-        return out.sorted { ($0.id == "body" ? "" : $0.at) < ($1.id == "body" ? "" : $1.at) }
-    }
-
     @ViewBuilder private var conversationTab: some View {
-        let entries = timeline
+        let items = pr.map { PRTimeline.build(pr: $0, reviewComments: reviewComments ?? []) } ?? []
         Group {
-            if entries.isEmpty {
+            if items.isEmpty {
                 centered(loadingDetail ? "loading…" : "No conversation")
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(entries) { e in entryView(e) }
-                    }.padding(12)
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(items) { timelineRow($0) }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .readingColumn(940)
                 }
             }
         }
         .task(id: item.repo) { await loadReviewComments() }
     }
 
-    @ViewBuilder private func entryView(_ e: Entry) -> some View {
-        if e.eventOnly {
-            HStack(spacing: 7) {
-                if let (_, c) = e.tag { Circle().fill(c).frame(width: 7, height: 7) }
-                Text(e.author ?? "someone").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.fg)
-                Text(e.body).font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
-                Spacer()
-            }.padding(.horizontal, 6).padding(.vertical, 2)
-        } else if e.context != nil {
-            commentBlock(author: e.author, body: e.body, tag: e.tag, context: e.context, hunk: e.hunk)
-                .padding(.leading, 18)
-        } else {
-            commentBlock(author: e.author, body: e.body, tag: e.tag)
+    private let railWidth: CGFloat = 28
+    private let avatarSize: CGFloat = 36
+
+    @ViewBuilder private func timelineRow(_ it: PRTimelineItem) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Avatar(url: it.avatar, name: it.author, size: avatarSize)
+            timelineNode(it)
+                .frame(width: railWidth)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .background(alignment: .top) { Rectangle().fill(Theme.borderSoft).frame(width: 2) }
+            VStack(alignment: .leading, spacing: 8) {
+                switch it.kind {
+                case .description:
+                    commentCard(author: it.author, avatar: it.avatar, headline: "opened this pull request", body: it.body)
+                case .comment:
+                    commentCard(author: it.author, avatar: it.avatar, headline: "commented", body: it.body)
+                case .review(let state, let inline):
+                    HStack(spacing: 6) {
+                        Text(it.author ?? "someone").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.fg)
+                        Text(reviewVerb(state)).font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                        Spacer()
+                    }.frame(height: avatarSize)
+                    if !it.body.isEmpty { commentCard(author: it.author, avatar: it.avatar, headline: "left a comment", body: it.body) }
+                    ForEach(inline) { rc in inlineCard(rc).padding(.leading, 24) }
+                case .inline(let rc):
+                    inlineCard(rc)
+                }
+            }
+            .padding(.bottom, 16)
         }
     }
 
+    @ViewBuilder private func timelineNode(_ it: PRTimelineItem) -> some View {
+        switch it.kind {
+        case .description, .comment: Color.clear.frame(height: 1)
+        default: timelineIcon(it.kind).frame(height: avatarSize)
+        }
+    }
+
+    @ViewBuilder private func timelineIcon(_ kind: PRTimelineItem.Kind) -> some View {
+        let (icon, col): (String, Color) = {
+            switch kind {
+            case .review(let state, _):
+                switch state {
+                case "APPROVED": return ("checkmark", Theme.ok)
+                case "CHANGES_REQUESTED": return ("xmark", Theme.danger)
+                default: return ("eye", Theme.fgMuted)
+                }
+            case .inline: return ("text.bubble", Theme.fgMuted)
+            case .comment: return ("bubble.left", Theme.fgMuted)
+            case .description: return ("arrow.triangle.pull", Theme.accent)
+            }
+        }()
+        Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(col)
+            .frame(width: 22, height: 22)
+            .background(Theme.bg, in: Circle())
+            .overlay(Circle().strokeBorder(col.opacity(0.5), lineWidth: 1.5))
+    }
+
+    private func reviewVerb(_ state: String) -> String {
+        switch state {
+        case "APPROVED": return "approved these changes"
+        case "CHANGES_REQUESTED": return "requested changes"
+        case "DISMISSED": return "review dismissed"
+        default: return "reviewed"
+        }
+    }
+
+    private func commentCard(author: String?, avatar: String? = nil, headline: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Avatar(url: avatar, name: author, size: 20)
+                Text(author ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
+                Text(headline).font(.system(size: 11.5)).foregroundStyle(Theme.fgMuted)
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Theme.panel3)
+            Divider().overlay(Theme.borderSoft)
+            MarkdownText(body).padding(12)
+        }
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
+    }
+
+    private func inlineCard(_ rc: PRReviewComment) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text").font(.system(size: 10)).foregroundStyle(Theme.fgMuted)
+                Text(rc.path.map { "\($0)\(rc.line.map { ":\($0)" } ?? "")" } ?? "")
+                    .font(Theme.mono(10.5)).foregroundStyle(Theme.fg).lineLimit(1).truncationMode(.middle)
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(Theme.panel3)
+            if let lines = rc.hunkLines, !lines.isEmpty {
+                Divider().overlay(Theme.borderSoft)
+                hunkSnippet(lines)
+            }
+            Divider().overlay(Theme.borderSoft)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Avatar(url: rc.avatarUrl, name: rc.user, size: 24)
+                    Text(rc.user ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
+                }
+                MarkdownText(rc.body ?? "")
+            }
+            .padding(12)
+        }
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
+    }
 
     private func checkRow(_ c: PRCheck) -> some View {
         let (icon, col): (String, Color) = {
@@ -712,44 +786,26 @@ struct PRDetail: View {
         }.buttonStyle(.plain)
     }
 
-    private func commentBlock(author: String?, body: String, tag: (String, Color)?, context: String? = nil, hunk: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Text(author ?? "unknown").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg)
-                if let (t, c) = tag {
-                    Text(t).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(c)
-                        .padding(.horizontal, 5).padding(.vertical, 1).background(c.opacity(0.15), in: Capsule())
+    private func hunkSnippet(_ lines: [DiffLine]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(lines.suffix(6)) { l in
+                let tint: Color? = l.kind == .add ? Theme.ok : l.kind == .del ? Theme.danger : nil
+                let num = l.kind == .del ? l.oldN : l.newN
+                HStack(spacing: 0) {
+                    Text(num.map(String.init) ?? "").font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                        .frame(width: 36, alignment: .trailing)
+                    Text(l.kind == .add ? "+" : l.kind == .del ? "-" : " ").font(Theme.mono(10.5, .bold))
+                        .foregroundStyle(tint ?? Theme.dim).frame(width: 16)
+                    Text(l.text.isEmpty ? " " : l.text).font(Theme.mono(10.5)).foregroundStyle(Theme.fgSoft)
+                        .lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 0)
                 }
-                Spacer()
-            }
-            if let context {
-                Text(context).font(Theme.mono(10)).foregroundStyle(Theme.accent).lineLimit(1)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Theme.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))
-            }
-            if let hunk, !hunk.isEmpty { hunkSnippet(hunk) }
-            MarkdownText(body)
-        }
-        .padding(10)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
-    }
-
-    private func hunkSnippet(_ hunk: String) -> some View {
-        let lines = Array(hunk.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).suffix(6))
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, l in
-                Text(l.isEmpty ? " " : l).font(Theme.mono(10.5))
-                    .foregroundStyle(l.hasPrefix("+") ? Theme.ok : l.hasPrefix("-") ? Theme.danger : l.hasPrefix("@@") ? Theme.accent : Theme.fgSoft)
-                    .lineLimit(1).truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 6)
-                    .background(l.hasPrefix("+") ? Theme.ok.opacity(0.08) : l.hasPrefix("-") ? Theme.danger.opacity(0.08) : .clear)
+                .padding(.trailing, 8).padding(.vertical, 1.5)
+                .background(tint?.opacity(0.10) ?? .clear)
             }
         }
         .padding(.vertical, 4)
-        .background(Theme.panel3, in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.borderSoft))
+        .background(Theme.bg)
     }
 
     private func reviewTag(_ state: String?) -> (String, Color)? {

@@ -396,7 +396,7 @@ struct DatabasePane: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            DataGrid(columns: vm.grid.columns, rows: vm.grid.rows, isDark: theme.mode == .dark,
+            DataGrid(columns: vm.grid.columns, rows: vm.grid.rows, isDark: theme.mode.isDark,
                      onSelectRow: { vm.selectedRow = $0 })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

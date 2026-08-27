@@ -109,6 +109,7 @@ struct JiraPane: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
+                    .readingColumn()
                 }
                 if showComments && !d.comments.isEmpty {
                     Divider().overlay(Theme.borderSoft)

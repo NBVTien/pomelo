@@ -12,7 +12,10 @@ extension Color {
     static func w(_ a: Double) -> Color { Color(white: 1, opacity: a) }
 }
 
-enum ThemeMode: String, CaseIterable { case dark, light, sepia }
+enum ThemeMode: String, CaseIterable {
+    case dark, light, sepia
+    var isDark: Bool { self != .light }
+}
 
 struct Palette {
     let bg, bgSoft, surface, panel3: Color
@@ -31,14 +34,14 @@ final class ThemeManager: ObservableObject {
         didSet {
             activeThemeMode = mode
             UserDefaults.standard.set(mode.rawValue, forKey: "themeMode")
-            NSApp.appearance = NSAppearance(named: mode == .light ? .aqua : .darkAqua)
+            NSApp.appearance = NSAppearance(named: mode.isDark ? .darkAqua : .aqua)
         }
     }
     func cycle() {
         let all = ThemeMode.allCases
         mode = all[(all.firstIndex(of: mode)! + 1) % all.count]
     }
-    func applyToWindow() { NSApp.appearance = NSAppearance(named: mode == .light ? .aqua : .darkAqua) }
+    func applyToWindow() { NSApp.appearance = NSAppearance(named: mode.isDark ? .darkAqua : .aqua) }
 }
 
 enum Theme {

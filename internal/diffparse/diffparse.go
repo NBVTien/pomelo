@@ -119,27 +119,50 @@ func Parse(text string) []File {
 			continue
 		}
 		lid++
-		switch {
-		case strings.HasPrefix(raw, "+"):
-			n := newN
-			cur.Lines = append(cur.Lines, Line{ID: lid, Kind: KindAdd, NewN: &n, Text: raw[1:]})
-			cur.Adds++
-			newN++
-		case strings.HasPrefix(raw, "-"):
-			o := oldN
-			cur.Lines = append(cur.Lines, Line{ID: lid, Kind: KindDel, OldN: &o, Text: raw[1:]})
-			cur.Dels++
-			oldN++
-		default:
-			t := strings.TrimPrefix(raw, " ")
-			o, n := oldN, newN
-			cur.Lines = append(cur.Lines, Line{ID: lid, Kind: KindContext, OldN: &o, NewN: &n, Text: t})
-			oldN++
-			newN++
-		}
+		cur.addBodyLine(raw, lid, &oldN, &newN)
 	}
 	flush()
 	return files
+}
+
+func (f *File) addBodyLine(raw string, lid int, oldN, newN *int) {
+	switch {
+	case strings.HasPrefix(raw, "+"):
+		n := *newN
+		f.Lines = append(f.Lines, Line{ID: lid, Kind: KindAdd, NewN: &n, Text: raw[1:]})
+		f.Adds++
+		*newN++
+	case strings.HasPrefix(raw, "-"):
+		o := *oldN
+		f.Lines = append(f.Lines, Line{ID: lid, Kind: KindDel, OldN: &o, Text: raw[1:]})
+		f.Dels++
+		*oldN++
+	default:
+		t := strings.TrimPrefix(raw, " ")
+		o, n := *oldN, *newN
+		f.Lines = append(f.Lines, Line{ID: lid, Kind: KindContext, OldN: &o, NewN: &n, Text: t})
+		*oldN++
+		*newN++
+	}
+}
+
+// ParseHunk structures a single review-comment diff_hunk: the "@@" header seeds
+// the numbering and is dropped, so callers get only renderable body lines.
+func ParseHunk(hunk string) []Line {
+	lines := strings.Split(strings.TrimSuffix(hunk, "\n"), "\n")
+	f := &File{Lines: []Line{}}
+	oldN, newN := 1, 1
+	if len(lines) > 0 && strings.HasPrefix(lines[0], "@@") {
+		oldN, newN = hunkStart(lines[0])
+		lines = lines[1:]
+	}
+	if hunk == "" {
+		return f.Lines
+	}
+	for i, raw := range lines {
+		f.addBodyLine(raw, i+1, &oldN, &newN)
+	}
+	return f.Lines
 }
 
 func setOld(f *File, p string) { f.OldPath = &p }

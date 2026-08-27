@@ -127,3 +127,40 @@ func TestLineNumbersTrackHunk(t *testing.T) {
 		}
 	}
 }
+
+func TestParseHunkNumbersFromHeader(t *testing.T) {
+	got := ParseHunk("@@ -10,3 +20,4 @@ def x\n ctx\n-old\n+new1\n+new2\n")
+	wantKind := []Kind{KindContext, KindDel, KindAdd, KindAdd}
+	wantNum := []int{20, 11, 21, 22}
+	if len(got) != 4 {
+		t.Fatalf("want 4 lines, got %d", len(got))
+	}
+	for i, l := range got {
+		if l.Kind != wantKind[i] {
+			t.Fatalf("line %d kind %q", i, l.Kind)
+		}
+		n := l.NewN
+		if l.Kind == KindDel {
+			n = l.OldN
+		}
+		if n == nil || *n != wantNum[i] {
+			t.Fatalf("line %d number %v want %d", i, n, wantNum[i])
+		}
+	}
+	if got[1].Text != "old" || got[0].Text != "ctx" {
+		t.Fatalf("text: %q %q", got[0].Text, got[1].Text)
+	}
+}
+
+func TestParseHunkWithoutHeaderStartsAtOne(t *testing.T) {
+	got := ParseHunk("+a\n b")
+	if len(got) != 2 || *got[0].NewN != 1 || *got[1].NewN != 2 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestParseHunkEmpty(t *testing.T) {
+	if got := ParseHunk(""); got == nil || len(got) != 0 {
+		t.Fatalf("want empty non-nil slice, got %#v", got)
+	}
+}

@@ -137,7 +137,9 @@ struct DependencyBoard: View {
                 Text("No cached node_modules yet.").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                board.overlay(alignment: .bottomLeading) { hint }
+                board
+                Divider().overlay(Theme.borderSoft)
+                hint
             }
         }
         .frame(width: 900, height: 640).background(Theme.bg)
@@ -200,8 +202,9 @@ struct DependencyBoard: View {
 
     private var hint: some View {
         Text("orange = not in store yet (Optimize to capture) - red = unused (tap to reclaim) - hover to trace, drag to pan")
-            .font(.system(size: 10)).foregroundStyle(Theme.dim)
-            .padding(.horizontal, 14).padding(.vertical, 10)
+            .font(.system(size: 10)).foregroundStyle(Theme.dim).lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18).padding(.vertical, 10)
     }
 
     private var board: some View {
