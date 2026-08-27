@@ -6,6 +6,18 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-28
+
+### Added
+- Add repos to an existing workspace: right-click a workspace and pick "Add repo..." to fork more repos onto its branch, wiring up their env, ports, and services without touching the repos already there. (#54)
+
+### Changed
+- PR and Jira panes are far more readable: a GitHub-style conversation timeline with avatars, review threads, and inline comments, laid out in a centered reading column, plus sepia theme fixes. Review bodies are now surfaced from the core. (#49)
+
+### Fixed
+- Shared services now connect over the explicit IPv4 loopback (127.0.0.1) instead of "localhost", avoiding IPv6 connection failures on Docker Desktop where only some clients could reach the port. (#54)
+- A service that just crashed no longer briefly shows as running: holder liveness now treats an exited-but-unreaped process as dead. (#55)
+
 ## [0.2.5] - 2026-08-27
 
 ### Fixed
