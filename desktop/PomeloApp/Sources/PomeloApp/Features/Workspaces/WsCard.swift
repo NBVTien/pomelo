@@ -40,6 +40,7 @@ struct WsCard: View {
     var selected: Bool = false
     var agent: String? = nil
     var prs: [WorkspacePR] = []
+    var severity: String = "ok"
     var prsLoading = false
     var jira: JiraIssue? = nil
     var onOpenPRs: () -> Void = {}
@@ -65,16 +66,12 @@ struct WsCard: View {
 
     private var openPRs: [WorkspacePR] { prs.filter { $0.pr != nil } }
     private var prColor: Color {
-        var anyMerged = false, worst = 0
-        for p in openPRs {
-            guard let pr = p.pr else { continue }
-            if pr.state == "MERGED" { anyMerged = true; continue }
-            if pr.conflict || pr.checks == .fail || pr.review == .changes { worst = max(worst, 2) }
-            else if pr.checks == .pending || pr.review == .review { worst = max(worst, 1) }
+        switch severity {
+        case "danger": return Theme.danger
+        case "merged": return Color(hex: 0xa371f7)
+        case "warn":   return Theme.warn
+        default:       return Theme.ok
         }
-        if worst == 2 { return Theme.danger }
-        if anyMerged { return Color(hex: 0xa371f7) }
-        return worst == 1 ? Theme.warn : Theme.ok
     }
 
 
@@ -145,7 +142,8 @@ struct WsCard: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .anchorPreference(key: PRPeekAnchorKey.self, value: .bounds) { [ws.id: $0] }
+        // Only the hovered row publishes its anchor; a .bounds anchor on every row stutters scroll.
+        .anchorPreference(key: PRPeekAnchorKey.self, value: .bounds) { hoverPill ? [ws.id: $0] : [:] }
         .onHover { h in
             hoverPill = h
             if h { DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { if hoverPill { onPeekEnter() } } }
