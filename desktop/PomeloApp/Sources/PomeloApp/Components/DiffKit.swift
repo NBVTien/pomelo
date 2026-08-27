@@ -533,6 +533,8 @@ struct NativeDiffView: NSViewRepresentable {
         tv.lineKinds = built.kinds
         tv.lineStarts = built.starts
         tv.textStorage?.setAttributedString(built.string)
+        if let tc = tv.textContainer { tv.layoutManager?.ensureLayout(for: tc) }
+        tv.needsDisplay = true
     }
 
     final class Coord { var textView: DiffTextView?; var path = "" }
