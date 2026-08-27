@@ -1,16 +1,17 @@
 import SwiftUI
 
 
-struct DiffLine: Identifiable, Sendable {
-    enum Kind: Sendable { case context, add, del, hunk }
+struct DiffLine: Identifiable, Sendable, Decodable {
+    enum Kind: String, Sendable, Decodable { case context, add, del, hunk }
     let id: Int
     let kind: Kind
     let oldN: Int?
     let newN: Int?
     let text: String
+    enum CodingKeys: String, CodingKey { case id, kind, text, oldN = "old_n", newN = "new_n" }
 }
 
-struct DiffFile: Identifiable, Sendable {
+struct DiffFile: Identifiable, Sendable, Decodable {
     var path: String
     var oldPath: String?
     var status: String
@@ -20,6 +21,11 @@ struct DiffFile: Identifiable, Sendable {
     var lines: [DiffLine] = []
     var headerOldPath: String = ""
     var id: String { path }
+
+    enum CodingKeys: String, CodingKey {
+        case path, status, adds, dels, binary, lines
+        case oldPath = "old_path", headerOldPath = "header_old_path"
+    }
 
     var isRename: Bool { status == "R" || status == "C" }
 
@@ -33,99 +39,6 @@ struct DiffFile: Identifiable, Sendable {
         while i < a.count - 1 && i < b.count - 1 && a[i] == b[i] { i += 1 }
         let prefix = i == 0 ? "" : a[0..<i].joined(separator: "/") + "/"
         return (prefix, a[i...].joined(separator: "/"), b[i...].joined(separator: "/"))
-    }
-}
-
-/// Splits a `diff --git a/x b/y` header. Cannot split on spaces — paths may
-/// contain them — so the boundary is the last " b/" leaving a well-formed `a/`.
-func gitHeaderPaths(_ body: String) -> (String, String) {
-    let s = Array(body)
-    var candidates: [Int] = []
-    if s.count > 3 {
-        for i in 0...(s.count - 3) where s[i] == " " && s[i + 1] == "b" && s[i + 2] == "/" {
-            candidates.append(i)
-        }
-    }
-    for i in candidates.reversed() {
-        let left = String(s[0..<i]), right = String(s[(i + 1)...])
-        if left.hasPrefix("a/") && right.hasPrefix("b/") {
-            return (String(left.dropFirst(2)), String(right.dropFirst(2)))
-        }
-    }
-    return ("", "")
-}
-
-enum DiffParser {
-    static func parse(_ text: String) -> [DiffFile] {
-        var files: [DiffFile] = []
-        var cur: DiffFile?
-        var oldN = 0, newN = 0
-        var lid = 0
-        let flush = { if let c = cur { files.append(c) }; cur = nil }
-
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
-            if raw.hasPrefix("diff --git ") {
-                flush()
-                let (a, b) = gitHeaderPaths(String(raw.dropFirst("diff --git ".count)))
-                cur = DiffFile(path: b, oldPath: nil, status: "M")
-                cur?.headerOldPath = a
-                oldN = 0; newN = 0
-                continue
-            }
-            guard cur != nil else { continue }
-            if raw.hasPrefix("new file") { cur?.status = "A"; continue }
-            if raw.hasPrefix("deleted file") {
-                cur?.status = "D"
-                if let h = cur?.headerOldPath, !h.isEmpty { cur?.path = h }
-                continue
-            }
-            if raw.hasPrefix("rename from ") { cur?.oldPath = String(raw.dropFirst("rename from ".count)); cur?.status = "R"; continue }
-            if raw.hasPrefix("rename to ") { cur?.path = String(raw.dropFirst("rename to ".count)); cur?.status = "R"; continue }
-            if raw.hasPrefix("copy from ") { cur?.oldPath = String(raw.dropFirst("copy from ".count)); cur?.status = "C"; continue }
-            if raw.hasPrefix("copy to ") { cur?.path = String(raw.dropFirst("copy to ".count)); cur?.status = "C"; continue }
-            if raw.hasPrefix("Binary files") { cur?.binary = true; continue }
-            if raw.hasPrefix("--- ") { continue }
-            if raw.hasPrefix("+++ ") {
-                let p = String(raw.dropFirst(4))
-                if p != "/dev/null" { cur?.path = p.hasPrefix("b/") ? String(p.dropFirst(2)) : p }
-                continue
-            }
-            if raw.hasPrefix("index ") || raw.hasPrefix("similarity ") || raw.hasPrefix("\\ ") { continue }
-            if raw.hasPrefix("@@") {
-                (oldN, newN) = hunkStart(raw)
-                lid += 1
-                cur?.lines.append(DiffLine(id: lid, kind: .hunk, oldN: nil, newN: nil, text: raw))
-                continue
-            }
-            // Trailing blank from the final newline, before any hunk: not a context line.
-            if raw.isEmpty, cur?.lines.isEmpty ?? true { continue }
-            let first = raw.first
-            lid += 1
-            switch first {
-            case "+":
-                cur?.lines.append(DiffLine(id: lid, kind: .add, oldN: nil, newN: newN, text: String(raw.dropFirst())))
-                cur?.adds += 1; newN += 1
-            case "-":
-                cur?.lines.append(DiffLine(id: lid, kind: .del, oldN: oldN, newN: nil, text: String(raw.dropFirst())))
-                cur?.dels += 1; oldN += 1
-            default:
-                let t = raw.hasPrefix(" ") ? String(raw.dropFirst()) : raw
-                cur?.lines.append(DiffLine(id: lid, kind: .context, oldN: oldN, newN: newN, text: t))
-                oldN += 1; newN += 1
-            }
-        }
-        flush()
-        return files
-    }
-
-    private static func hunkStart(_ s: String) -> (Int, Int) {
-        var old = 0, new = 0
-        let body = s.dropFirst(2)
-        for tok in body.split(separator: " ") {
-            if tok.hasPrefix("-") { old = Int(tok.dropFirst().split(separator: ",").first ?? "0") ?? 0 }
-            if tok.hasPrefix("+") { new = Int(tok.dropFirst().split(separator: ",").first ?? "0") ?? 0; break }
-        }
-        return (old, new)
     }
 }
 
@@ -444,7 +357,9 @@ struct DiffFileView: View {
     @EnvironmentObject var theme: ThemeManager
     let file: DiffFile
     @State private var rows: [SplitRow] = []
+    @State private var maxChars: Int = 0
     private let rowH: CGFloat = 17
+    private let charW: CGFloat = 6.7   // SF Mono 11pt advance; over-allocate to avoid clipping
 
     var body: some View {
         Group {
@@ -453,8 +368,11 @@ struct DiffFileView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 GeometryReader { geo in
-                    let sideW = max(160, (geo.size.width - 1) / 2)
-                    ScrollView(.vertical) {
+                    let viewportSide = max(160, (geo.size.width - 1) / 2)
+                    // Grow each side to the longest line so nothing is truncated; the
+                    // pane scrolls horizontally instead (VSCode/Zed behaviour).
+                    let sideW = max(viewportSide, 68 + CGFloat(maxChars) * charW)
+                    ScrollView([.vertical, .horizontal]) {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(rows) { row($0, sideW: sideW) }
                         }
@@ -464,7 +382,9 @@ struct DiffFileView: View {
         }
         .task(id: file.path) {
             let f = file
-            rows = await Task.detached(priority: .userInitiated) { splitRows(f) }.value
+            let built = await Task.detached(priority: .userInitiated) { splitRows(f) }.value
+            rows = built
+            maxChars = built.reduce(0) { max($0, max($1.left?.count ?? 0, $1.right?.count ?? 0)) }
         }
     }
 
@@ -472,7 +392,7 @@ struct DiffFileView: View {
         if let h = r.hunk {
             Text(h).font(Theme.mono(10)).foregroundStyle(Theme.accent).lineLimit(1)
                 .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, minHeight: rowH, alignment: .leading)
+                .frame(minWidth: sideW * 2 + 1, minHeight: rowH, alignment: .leading)
                 .background(Theme.accent.opacity(0.08))
         } else {
             HStack(spacing: 0) {
@@ -622,10 +542,15 @@ struct NativeDiffView: NSViewRepresentable {
         tv.isRichText = false
         tv.drawsBackground = false
         tv.textContainerInset = NSSize(width: 0, height: 6)
+        // Grow to the widest line instead of tracking the viewport, so long lines
+        // scroll horizontally rather than getting clipped (VSCode/Zed behaviour).
         tv.isHorizontallyResizable = true
+        tv.isVerticallyResizable = true
+        tv.minSize = .zero
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.autoresizingMask = []
         tv.textContainer?.widthTracksTextView = false
         tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        tv.autoresizingMask = [.width, .height]
         context.coordinator.textView = tv
 
         let scroll = NSScrollView()
@@ -712,6 +637,9 @@ final class DiffTextView: NSTextView {
         let delBg = NSColor.systemRed.withAlphaComponent(0.12)
         let hunkBg = NSColor.systemPurple.withAlphaComponent(0.08)
         let inset = textContainerInset
+        // Tint the whole row across the full content width — including past the
+        // viewport — so a long added/deleted line stays highlighted when scrolled.
+        let width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
         let glyphRange = lm.glyphRange(forBoundingRect: rect, in: tc)
         lm.enumerateLineFragments(forGlyphRange: glyphRange) { _, used, _, glyphR, _ in
             let charIdx = lm.characterIndexForGlyph(at: glyphR.location)
@@ -726,9 +654,7 @@ final class DiffTextView: NSTextView {
             }
             guard let color else { return }
             color.setFill()
-            let r = NSRect(x: 0, y: used.origin.y + inset.height,
-                           width: self.bounds.width, height: used.height)
-            r.fill()
+            NSRect(x: 0, y: used.origin.y + inset.height, width: width, height: used.height).fill()
         }
     }
 

@@ -3,6 +3,7 @@ package core
 import (
 	"net/http"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/pomelohq/pomelo/internal/services"
@@ -84,6 +85,22 @@ func (s *Server) handleNMStoreList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) NMStoreList() map[string]any {
 	entries := services.NMStoreEntries()
+	// The nm-store is global (keyed by repo name), so it holds caches from every
+	// project. Scope the board to the current project's repos, else another
+	// project's repos (e.g. web/jobs) show up here as "unused" and could be reclaimed.
+	if cfg := s.cfg(); cfg != nil && len(cfg.Repos) > 0 {
+		mine := map[string]bool{}
+		for name := range cfg.Repos {
+			mine[name] = true
+		}
+		kept := entries[:0]
+		for _, e := range entries {
+			if mine[e.Repo] {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
 	inStore := map[string]bool{}
 	for _, e := range entries {
 		inStore[e.Repo+"/"+e.Hash] = true
@@ -121,6 +138,7 @@ func (s *Server) NMStoreList() map[string]any {
 	type row struct {
 		services.NMStoreEntry
 		Current   bool       `json:"current"`
+		Orphan    bool       `json:"orphan"`
 		Consumers []consumer `json:"consumers"`
 	}
 	out := make([]row, 0, len(entries))
@@ -137,8 +155,15 @@ func (s *Server) NMStoreList() map[string]any {
 				cur = true
 			}
 		}
-		out = append(out, row{NMStoreEntry: e, Current: cur, Consumers: cs})
+		out = append(out, row{NMStoreEntry: e, Current: cur, Orphan: len(cs) == 0, Consumers: cs})
 	}
+	// Core owns ordering (ADR 0001): in-use first, then largest — the UI just renders.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Current != out[j].Current {
+			return out[i].Current
+		}
+		return out[i].Bytes > out[j].Bytes
+	})
 	if unoptimized == nil {
 		unoptimized = []unopt{}
 	}
