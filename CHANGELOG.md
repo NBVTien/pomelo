@@ -6,6 +6,14 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-27
+
+### Fixed
+- Keeping the golden source fresh now updates a main that has diverged from origin (upstream rebase or force-push) by mirroring origin, instead of silently skipping it. (#37)
+
+### Changed
+- Internal: standardized the core-to-UI boundary with DTO contract tests and a view-model data layer; no user-facing behavior change. (#35)
+
 ## [0.2.3] - 2026-08-27
 
 ### Fixed
