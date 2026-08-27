@@ -6,6 +6,11 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-27
+
+### Fixed
+- Opening a service in the browser now builds a URL that resolves even when two workspaces share a ticket prefix; it falls back to the full branch host instead of an ambiguous short one. (#34)
+
 ## [0.2.2] - 2026-08-27
 
 ### Added
