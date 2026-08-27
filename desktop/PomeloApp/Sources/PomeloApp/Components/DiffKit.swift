@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 
 struct DiffLine: Identifiable, Sendable, Decodable, Equatable {
@@ -213,7 +214,7 @@ struct DiffFilesView: View {
                                 } else if splitDiff {
                                     DiffFileView(file: f)
                                 } else {
-                                    NativeDiffView(file: f, isDark: theme.mode.isDark)
+                                    DiffUnifiedView(file: f)
                                 }
                             } else {
                                 centered("Select a file")
@@ -441,119 +442,47 @@ struct DiffFileView: View {
     }
 }
 
-struct UnifiedRow: Identifiable, Sendable {
-    let id: Int
-    var hunk: String? = nil
-    var oldN: Int? = nil
-    var newN: Int? = nil
-    var kind: DiffLine.Kind = .context
-    var text: String = ""
-    var spans: [SynSpan] = []
-}
-
-func unifiedRows(_ file: DiffFile) -> [UnifiedRow] {
-    file.lines.map { l in
-        UnifiedRow(id: l.id, hunk: l.kind == .hunk ? l.text : nil,
-                   oldN: l.oldN, newN: l.newN, kind: l.kind, text: l.text,
-                   spans: l.kind == .hunk ? [] : Syntax.spans(l.text))
-    }
-}
-
 struct DiffUnifiedView: View {
     @EnvironmentObject var theme: ThemeManager
     let file: DiffFile
-    @State private var rows: [UnifiedRow] = []
-    private let rowH: CGFloat = 17
 
     var body: some View {
-        Group {
-            if file.binary {
-                Text("Binary file — no textual diff").font(.system(size: 12)).foregroundStyle(Theme.dim)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(rows) { row($0) }
-                    }
-                }
-            }
-        }
-        .task(id: file.path) {
-            let f = file
-            rows = await Task.detached(priority: .userInitiated) { unifiedRows(f) }.value
-        }
-    }
-
-    @ViewBuilder private func row(_ r: UnifiedRow) -> some View {
-        if let h = r.hunk {
-            Text(h).font(Theme.mono(10)).foregroundStyle(Theme.accent).lineLimit(1)
-                .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, minHeight: rowH, alignment: .leading)
-                .background(Theme.accent.opacity(0.08))
+        if file.binary {
+            Text("Binary file — no textual diff").font(.system(size: 12)).foregroundStyle(Theme.dim)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            HStack(spacing: 0) {
-                gutter(r.oldN); gutter(r.newN)
-                Text(r.kind == .add ? "+" : r.kind == .del ? "-" : " ")
-                    .font(Theme.mono(11)).foregroundStyle(r.kind == .add ? Theme.ok : r.kind == .del ? Theme.danger : Theme.dim)
-                    .frame(width: 14, alignment: .center)
-                code(r.text, spans: r.spans)
-                    .lineLimit(1).truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 2)
-            }
-            .frame(height: rowH)
-            .background(r.kind == .add ? Theme.ok.opacity(0.10) : r.kind == .del ? Theme.danger.opacity(0.10) : .clear)
+            UnifiedDiffText(file: file, isDark: theme.mode.isDark)
         }
-    }
-
-    private func gutter(_ n: Int?) -> some View {
-        Text(n.map(String.init) ?? "").font(Theme.mono(9.5)).foregroundStyle(Theme.dim)
-            .frame(width: 40, alignment: .trailing).padding(.trailing, 6)
-    }
-
-    private func code(_ text: String, spans: [SynSpan]) -> Text {
-        guard !text.isEmpty else { return Text(" ").font(Theme.mono(11)) }
-        var a = AttributedString(text)
-        a.foregroundColor = Theme.fgSoft
-        let n = text.count
-        func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
-        for sp in spans where sp.kind != .plain {
-            let c: Color = sp.kind == .keyword ? Theme.accent : sp.kind == .string ? Theme.ok : sp.kind == .number ? Theme.warn : Theme.dim
-            a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = c
-        }
-        return Text(a).font(Theme.mono(11))
     }
 }
 
-
-import AppKit
-
-struct NativeDiffView: NSViewRepresentable {
+/// One NSTextView holding only the code, with line numbers and +/- drawn in the
+/// margin. SwiftUI scopes a selection per Text view, so a per-row VStack can only
+/// ever copy one line; a single text storage is what makes a multi-line selection
+/// possible, and keeping the gutter out of it is what keeps the copy clean.
+struct UnifiedDiffText: NSViewRepresentable {
     let file: DiffFile
     var isDark: Bool
 
     func makeCoordinator() -> Coord { Coord() }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let tv = DiffTextView()
+        let tv = GutterTextView()
         tv.isEditable = false
         tv.isSelectable = true
         tv.isRichText = false
         tv.drawsBackground = false
         tv.textContainerInset = NSSize(width: 0, height: 6)
-        // Grow to the widest line, not the viewport, so long lines scroll instead of clip.
-        tv.isHorizontallyResizable = true
-        tv.isVerticallyResizable = true
-        tv.minSize = .zero
-        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        tv.autoresizingMask = []
-        tv.textContainer?.widthTracksTextView = false
-        tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.textContainer?.widthTracksTextView = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
         context.coordinator.textView = tv
 
         let scroll = NSScrollView()
         scroll.documentView = tv
         scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
+        scroll.hasHorizontalScroller = false
         scroll.drawsBackground = false
         return scroll
     }
@@ -561,24 +490,32 @@ struct NativeDiffView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         scroll.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
         guard let tv = context.coordinator.textView else { return }
-        if context.coordinator.path == file.path { return }
+        if context.coordinator.path == file.path && context.coordinator.dark == isDark { return }
         context.coordinator.path = file.path
-        let built = DiffTextView.build(file)
-        tv.lineKinds = built.kinds
-        tv.lineStarts = built.starts
+        context.coordinator.dark = isDark
+
+        let built = GutterTextView.build(file)
+        tv.rows = built.rows
         tv.textStorage?.setAttributedString(built.string)
+        // Wrap inside the code column; the gutter is margin, not text.
+        tv.textContainerInset = NSSize(width: GutterTextView.gutterWidth, height: 6)
         if let tc = tv.textContainer { tv.layoutManager?.ensureLayout(for: tc) }
         tv.needsDisplay = true
     }
 
-    final class Coord { var textView: DiffTextView?; var path = "" }
+    final class Coord { var textView: GutterTextView?; var path = ""; var dark = false }
 }
 
-final class DiffTextView: NSTextView {
-    var lineKinds: [DiffLine.Kind] = []
-    var lineStarts: [Int] = []
+final class GutterTextView: NSTextView {
+    struct Row { let kind: DiffLine.Kind; let oldN: Int?; let newN: Int? }
 
+    static let gutterWidth: CGFloat = 86
     private static let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    private static let gutterFont = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .regular)
+
+    var rows: [Row] = []
+    private var lineStarts: [Int] = []
+
     private static func synColor(_ k: SynKind) -> NSColor {
         switch k {
         case .keyword: return .systemPurple
@@ -588,68 +525,99 @@ final class DiffTextView: NSTextView {
         case .plain:   return .labelColor
         }
     }
-    private static func gutter(_ n: Int?) -> String {
-        let s = n.map(String.init) ?? ""
-        return String(repeating: " ", count: max(0, 5 - s.count)) + s
-    }
 
-    static func build(_ file: DiffFile) -> (string: NSAttributedString, kinds: [DiffLine.Kind], starts: [Int]) {
+    static func build(_ file: DiffFile) -> (string: NSAttributedString, rows: [Row]) {
         let out = NSMutableAttributedString()
-        var kinds: [DiffLine.Kind] = []
-        var starts: [Int] = []
-        let dim = NSColor.tertiaryLabelColor, code = NSColor.labelColor
-        let addC = NSColor.systemGreen, delC = NSColor.systemRed, hunkC = NSColor.systemPurple
+        var rows: [Row] = []
+        let hunkC = NSColor.systemPurple
 
-        func append(_ s: String, _ color: NSColor) {
-            out.append(NSAttributedString(string: s, attributes: [.font: mono, .foregroundColor: color]))
-        }
-        func appendCode(_ text: String) {
-            let a = NSMutableAttributedString(string: text + "\n", attributes: [.font: mono, .foregroundColor: code])
-            for sp in Syntax.spans(text) where sp.kind != .plain {
-                guard let lo = text.index(text.startIndex, offsetBy: sp.lo, limitedBy: text.endIndex),
-                      let hi = text.index(text.startIndex, offsetBy: sp.hi, limitedBy: text.endIndex), lo < hi else { continue }
-                a.addAttribute(.foregroundColor, value: synColor(sp.kind), range: NSRange(lo..<hi, in: text))
+        for l in file.lines {
+            rows.append(Row(kind: l.kind, oldN: l.oldN, newN: l.newN))
+            if l.kind == .hunk {
+                out.append(NSAttributedString(string: l.text + "\n",
+                                              attributes: [.font: mono, .foregroundColor: hunkC]))
+                continue
+            }
+            let a = NSMutableAttributedString(string: l.text + "\n",
+                                              attributes: [.font: mono, .foregroundColor: NSColor.labelColor])
+            for sp in Syntax.spans(l.text) where sp.kind != .plain {
+                guard let lo = l.text.index(l.text.startIndex, offsetBy: sp.lo, limitedBy: l.text.endIndex),
+                      let hi = l.text.index(l.text.startIndex, offsetBy: sp.hi, limitedBy: l.text.endIndex),
+                      lo < hi else { continue }
+                a.addAttribute(.foregroundColor, value: synColor(sp.kind), range: NSRange(lo..<hi, in: l.text))
             }
             out.append(a)
         }
-        for l in file.lines {
-            starts.append(out.length)
-            kinds.append(l.kind)
-            if l.kind == .hunk {
-                append(l.text + "\n", hunkC)
-                continue
-            }
-            append(gutter(l.oldN) + " " + gutter(l.newN) + " ", dim)
-            let sign = l.kind == .add ? "+" : l.kind == .del ? "-" : " "
-            append(sign + " ", l.kind == .add ? addC : l.kind == .del ? delC : dim)
-            appendCode(l.text)
+        return (out, rows)
+    }
+
+    // Line starts are rebuilt lazily: the storage is set after `rows`.
+    private func ensureLineStarts() {
+        guard lineStarts.count != rows.count, let s = textStorage?.string else { return }
+        var starts: [Int] = []
+        var idx = 0
+        for line in s.components(separatedBy: "\n").dropLast() {
+            starts.append(idx)
+            idx += line.utf16.count + 1
         }
-        return (out, kinds, starts)
+        lineStarts = starts
     }
 
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
-        guard let lm = layoutManager, let tc = textContainer, !lineStarts.isEmpty else { return }
+        guard let lm = layoutManager, let tc = textContainer, !rows.isEmpty else { return }
+        ensureLineStarts()
+
         let addBg = NSColor.systemGreen.withAlphaComponent(0.12)
         let delBg = NSColor.systemRed.withAlphaComponent(0.12)
         let hunkBg = NSColor.systemPurple.withAlphaComponent(0.08)
         let inset = textContainerInset
-        let width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
         let glyphRange = lm.glyphRange(forBoundingRect: rect, in: tc)
+        var drawn = Set<Int>()
+
         lm.enumerateLineFragments(forGlyphRange: glyphRange) { _, used, _, glyphR, _ in
             let charIdx = lm.characterIndexForGlyph(at: glyphR.location)
             let line = self.lineIndex(forChar: charIdx)
-            guard line < self.lineKinds.count else { return }
-            let color: NSColor?
-            switch self.lineKinds[line] {
-            case .add: color = addBg
-            case .del: color = delBg
-            case .hunk: color = hunkBg
-            case .context: color = nil
+            guard line < self.rows.count else { return }
+            let row = self.rows[line]
+
+            let color: NSColor? = {
+                switch row.kind {
+                case .add: return addBg
+                case .del: return delBg
+                case .hunk: return hunkBg
+                case .context: return nil
+                }
+            }()
+            let y = used.origin.y + inset.height
+            if let color {
+                color.setFill()
+                NSRect(x: 0, y: y, width: self.bounds.width, height: used.height).fill()
             }
-            guard let color else { return }
-            color.setFill()
-            NSRect(x: 0, y: used.origin.y + inset.height, width: width, height: used.height).fill()
+            // Only the first fragment of a wrapped line carries its numbers.
+            if !drawn.contains(line) {
+                drawn.insert(line)
+                self.drawGutter(row, y: y)
+            }
+        }
+    }
+
+    private func drawGutter(_ row: Row, y: CGFloat) {
+        if row.kind == .hunk { return }
+        let dim = NSColor.tertiaryLabelColor
+        let signColor: NSColor = row.kind == .add ? .systemGreen : row.kind == .del ? .systemRed : dim
+        let attrs: [NSAttributedString.Key: Any] = [.font: Self.gutterFont, .foregroundColor: dim]
+
+        func draw(_ s: String, _ x: CGFloat, _ w: CGFloat, _ a: [NSAttributedString.Key: Any]) {
+            let str = NSAttributedString(string: s, attributes: a)
+            let size = str.size()
+            str.draw(at: NSPoint(x: x + w - size.width, y: y + 1))
+        }
+        draw(row.oldN.map(String.init) ?? "", 4, 32, attrs)
+        draw(row.newN.map(String.init) ?? "", 40, 32, attrs)
+        let sign = row.kind == .add ? "+" : row.kind == .del ? "-" : ""
+        if !sign.isEmpty {
+            draw(sign, 74, 8, [.font: Self.gutterFont, .foregroundColor: signColor])
         }
     }
 
