@@ -310,6 +310,12 @@ func (s *Server) Fetch(domain string, params json.RawMessage) []byte {
 			return nil
 		}
 		return diffparse.ParseJSON(out)
+	case "pr_commit_diff":
+		out, err := s.PRCommitDiff(branch, repo, pStr(params, "sha"), isMain)
+		if err != nil {
+			return nil
+		}
+		return diffparse.ParseJSON(out)
 	case "local_changes":
 		return s.WorkspaceLocalChanges(branch, isMain)
 	case "local_diff":

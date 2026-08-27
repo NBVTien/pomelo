@@ -10,4 +10,5 @@ enum PRStore {
     nonisolated static func comments(branch: String, repo: String, isMain: Bool) -> Data { PomCore.shared.prCommentsData(branch: branch, repo: repo, isMain: isMain) }
     nonisolated static func commits(branch: String, repo: String, isMain: Bool) -> Data { PomCore.shared.prCommitsData(branch: branch, repo: repo, base: "", isMain: isMain) }
     nonisolated static func diff(branch: String, repo: String, isMain: Bool) -> Data { PomCore.shared.prDiffData(branch: branch, repo: repo, isMain: isMain) }
+    nonisolated static func commitDiff(branch: String, repo: String, sha: String, isMain: Bool) -> Data { PomCore.shared.prCommitDiffData(branch: branch, repo: repo, sha: sha, isMain: isMain) }
 }

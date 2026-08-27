@@ -343,6 +343,37 @@ func (s *Feature) RepoCommits(branch, repo, baseOverride string, isMain bool) ma
 	return map[string]any{"commits": commits}
 }
 
+// CommitDiff returns the patch a single commit introduced.
+func (s *Feature) CommitDiff(branch, repo, sha string, isMain bool) ([]byte, error) {
+	if !isHexSHA(sha) {
+		return nil, fmt.Errorf("bad commit sha %q", sha)
+	}
+	wt := services.RepoWorktreePath(s.WorkspaceRoot, repo, branch, isMain)
+	// --format= drops the commit header; -M so a rename reads as one entry.
+	out, err := services.RunTimeout(10*time.Second, wt, "git", "show", "-M", "--format=", sha)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > maxDiffBytes {
+		return append(out[:maxDiffBytes], []byte("\n… diff truncated (too large)\n")...), nil
+	}
+	return out, nil
+}
+
+// The sha arrives from the UI and lands in an argv slot where git also accepts
+// options, so anything but hex is rejected rather than escaped.
+func isHexSHA(s string) bool {
+	if len(s) < 7 || len(s) > 40 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 const (
 	prTTL         = 150 * time.Second
 	prErrCooldown = 30 * time.Second
