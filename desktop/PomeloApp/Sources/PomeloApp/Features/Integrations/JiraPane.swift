@@ -1,21 +1,42 @@
 import SwiftUI
 
 struct JiraComment: Decodable, Equatable, Identifiable {
+    var commentId = ""
     var author = ""
+    var avatar = ""
     var created = ""
     var body = ""
-    var id: String { author + created }
+    var id: String { commentId.isEmpty ? author + created : commentId }
     var when: String {
         let s = created.replacingOccurrences(of: "T", with: " ")
         return String(s.prefix(16))
     }
+    // Jira style: "August 14, 2026 at 11:35 AM"
+    var whenLong: String { JiraDates.long(created) ?? when }
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
+        commentId = try c.decodeIfPresent(String.self, forKey: .commentId) ?? ""
         author = try c.decodeIfPresent(String.self, forKey: .author) ?? ""
+        avatar = try c.decodeIfPresent(String.self, forKey: .avatar) ?? ""
         created = try c.decodeIfPresent(String.self, forKey: .created) ?? ""
         body = try c.decodeIfPresent(String.self, forKey: .body) ?? ""
     }
-    enum K: String, CodingKey { case author, created, body }
+    enum K: String, CodingKey { case commentId = "id", author, avatar, created, body }
+}
+
+enum JiraDates {
+    private static let parse: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"; return f
+    }()
+    private static let out: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "MMMM d, yyyy 'at' h:mm a"; return f
+    }()
+    static func long(_ iso: String) -> String? {
+        guard let d = parse.date(from: iso) else { return nil }
+        return out.string(from: d)
+    }
 }
 
 struct JiraWebLink: Decodable, Equatable, Identifiable {
@@ -69,6 +90,7 @@ struct JiraPane: View {
 
     @StateObject private var vm = JiraPaneViewModel()
     @State private var showComments = true
+    @AppStorage("jira.commentsWidth") private var commentsWidth = 400.0
     @State private var collapsedComments: Set<String> = []
 
     private var key: String? { jiraKey(workspace.branch) }
@@ -144,8 +166,8 @@ struct JiraPane: View {
                     .readingColumn()
                 }
                 if showComments && !d.comments.isEmpty {
-                    Divider().overlay(Theme.borderSoft)
-                    commentsPane(d.comments).frame(width: 360)
+                    SplitHandle(axis: .horizontal, value: $commentsWidth, min: 300, max: 900, invert: true)
+                    commentsPane(d.comments).frame(width: commentsWidth)
                 }
             }
         }
@@ -209,7 +231,12 @@ struct JiraPane: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(visibleRows(comments), id: \.c.id) { row in
-                        commentRow(row.c, parent: row.parent)
+                        commentRow(row)
+                        if row.parent == nil, !(row.replies > 0 && !collapsedComments.contains(row.c.id)) {
+                            Divider().overlay(Theme.borderSoft).padding(.horizontal, 14)
+                        } else if row.last {
+                            Divider().overlay(Theme.borderSoft).padding(.horizontal, 14)
+                        }
                     }
                 }
             }
@@ -217,8 +244,10 @@ struct JiraPane: View {
         .background(Theme.bgSoft)
     }
 
-    private struct Row { let c: JiraComment; let parent: String? }
+    private struct Row { let c: JiraComment; let parent: String?; var replies = 0; var last = false }
 
+    // Jira has no reply threads in the API; a comment that opens with **@Name**
+    // is treated as a reply to that person's latest earlier comment.
     private func threaded(_ all: [JiraComment]) -> [Row] {
         func mentioned(_ body: String) -> String? {
             let t = body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -238,8 +267,9 @@ struct JiraPane: View {
         }
         var out: [Row] = []
         for top in chrono.filter({ parentOf[$0.id] == nil }).sorted(by: { $0.created > $1.created }) {
-            out.append(Row(c: top, parent: nil))
-            for r in (children[top.id] ?? []) { out.append(Row(c: r, parent: top.id)) }
+            let kids = children[top.id] ?? []
+            out.append(Row(c: top, parent: nil, replies: kids.count))
+            for (i, r) in kids.enumerated() { out.append(Row(c: r, parent: top.id, last: i == kids.count - 1)) }
         }
         return out
     }
@@ -248,37 +278,71 @@ struct JiraPane: View {
         threaded(all).filter { $0.parent == nil || !collapsedComments.contains($0.parent!) }
     }
 
-    private func commentRow(_ c: JiraComment, parent: String?) -> some View {
+    private let avatarSize: CGFloat = 32
+    private let replyAvatar: CGFloat = 24
+    private let railX: CGFloat = 14 + 16   // centre of the top-level avatar
+
+    private func commentRow(_ row: Row) -> some View {
+        let c = row.c
+        let isReply = row.parent != nil
         let collapsed = collapsedComments.contains(c.id)
-        let isReply = parent != nil
-        return VStack(alignment: .leading, spacing: 5) {
-            Button {
-                if collapsed { collapsedComments.remove(c.id) } else { collapsedComments.insert(c.id) }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 8)).foregroundStyle(Theme.dim).frame(width: 10)
-                    Text(c.author.isEmpty ? "—" : c.author).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.fg).lineLimit(1)
-                    Spacer(minLength: 6)
-                    Text(c.when).font(Theme.mono(10)).foregroundStyle(Theme.dim)
-                }.contentShape(Rectangle())
-            }.buttonStyle(.plain)
-            if !collapsed {
+        let showsRail = (!isReply && row.replies > 0 && !collapsed) || isReply
+        return HStack(alignment: .top, spacing: 10) {
+            if isReply { Color.clear.frame(width: railX + 8) }
+            Avatar(url: c.avatar.isEmpty ? nil : c.avatar, name: c.author, size: isReply ? replyAvatar : avatarSize, viaCore: true)
+                .padding(.top, isReply ? 2 : 0)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(c.author.isEmpty ? "—" : c.author).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.fg).lineLimit(1)
+                Text(c.whenLong).font(.system(size: 11)).foregroundStyle(Theme.fgMuted)
                 if c.body.isEmpty {
-                    Text("—").font(.system(size: 11.5)).foregroundStyle(Theme.dim)
+                    Text("—").font(.system(size: 12)).foregroundStyle(Theme.dim)
                 } else {
-                    MarkdownText(c.body)
+                    MarkdownText(c.body).padding(.top, 4)
+                }
+                if !isReply, row.replies > 0 {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            if collapsed { collapsedComments.remove(c.id) } else { collapsedComments.insert(c.id) }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: collapsed ? "chevron.right" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                            Text("\(row.replies) \(row.replies == 1 ? "reply" : "replies")").font(.system(size: 11.5, weight: .medium))
+                        }.foregroundStyle(Theme.accent)
+                    }.buttonStyle(.plain).padding(.top, 6)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 9).padding(.trailing, 14)
-        .padding(.leading, isReply ? 26 : 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .leading) {
-            if isReply { Rectangle().fill(Theme.borderSoft).frame(width: 1).padding(.leading, 14).padding(.vertical, 2) }
+        .padding(.leading, isReply ? 0 : 14).padding(.trailing, 14)
+        .padding(.top, isReply ? 6 : 16).padding(.bottom, isReply && !row.last ? 6 : 16)
+        .background(alignment: .topLeading) {
+            if showsRail { threadRail(isReply: isReply, last: row.last) }
         }
-        .overlay(alignment: .bottom) {
-            if !isReply { Rectangle().fill(Theme.borderSoft).frame(height: 1) }
+    }
+
+    // The connector Jira draws: straight down from the parent's avatar, curving
+    // into each reply's avatar; ends after the last reply.
+    private func threadRail(isReply: Bool, last: Bool) -> some View {
+        GeometryReader { geo in
+            Path { p in
+                let x = railX
+                if !isReply {
+                    p.move(to: CGPoint(x: x, y: 16 + avatarSize + 4))
+                    p.addLine(to: CGPoint(x: x, y: geo.size.height))
+                } else {
+                    let cy = 6 + 2 + replyAvatar / 2
+                    p.move(to: CGPoint(x: x, y: 0))
+                    p.addLine(to: CGPoint(x: x, y: cy - 10))
+                    p.addQuadCurve(to: CGPoint(x: x + 10, y: cy), control: CGPoint(x: x, y: cy))
+                    p.addLine(to: CGPoint(x: railX + 8 + 10 - 4, y: cy))
+                    if !last {
+                        p.move(to: CGPoint(x: x, y: cy - 10))
+                        p.addLine(to: CGPoint(x: x, y: geo.size.height))
+                    }
+                }
+            }
+            .stroke(Theme.border, lineWidth: 1.5)
         }
     }
 

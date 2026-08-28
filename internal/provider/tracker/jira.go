@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/pomelohq/pomelo/internal/config"
-	"github.com/pomelohq/pomelo/internal/httpx"
 	"github.com/pomelohq/pomelo/internal/diskcache"
+	"github.com/pomelohq/pomelo/internal/httpx"
 	"github.com/pomelohq/pomelo/internal/jira"
 	"github.com/pomelohq/pomelo/internal/plugin"
 	"github.com/pomelohq/pomelo/internal/secrets"
@@ -37,9 +37,14 @@ func (f *Jira) session() string {
 	return ""
 }
 
+// Bump when the detail payload shape changes so an upgraded app never serves a
+// stale-shaped cache (details are served cache-first, refreshed in the background).
+const jiraDiskVersion = 2
+
 type jiraDisk struct {
-	Issues map[string]jira.Issue     `json:"issues"`
-	Detail map[string]map[string]any `json:"detail"`
+	Version int                       `json:"version"`
+	Issues  map[string]jira.Issue     `json:"issues"`
+	Detail  map[string]map[string]any `json:"detail"`
 }
 
 func (f *Jira) ensureHydrated() {
@@ -53,15 +58,17 @@ func (f *Jira) ensureHydrated() {
 		for k, v := range d.Issues {
 			f.cache[k] = v // cached time stays zero -> refreshed in the background
 		}
-		for k, v := range d.Detail {
-			f.detail[k] = v
+		if d.Version == jiraDiskVersion {
+			for k, v := range d.Detail {
+				f.detail[k] = v
+			}
 		}
 	}
 }
 
 func (f *Jira) persist() {
 	f.mu.Lock()
-	snap := jiraDisk{Issues: map[string]jira.Issue{}, Detail: map[string]map[string]any{}}
+	snap := jiraDisk{Version: jiraDiskVersion, Issues: map[string]jira.Issue{}, Detail: map[string]map[string]any{}}
 	for k, v := range f.cache {
 		snap.Issues[k] = v
 	}

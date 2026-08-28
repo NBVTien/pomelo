@@ -169,7 +169,9 @@ func (c *Client) SearchByKeys(keys []string) ([]Issue, error) {
 }
 
 type Comment struct {
+	ID      string `json:"id"`
 	Author  string `json:"author"`
+	Avatar  string `json:"avatar"`
 	Created string `json:"created"`
 	Body    string `json:"body"`
 }
@@ -219,9 +221,13 @@ func (c *Client) IssueWithDescription(key string) (*IssueDetail, error) {
 			} `json:"attachment"`
 			Comment struct {
 				Comments []struct {
-					Author  struct{ DisplayName string } `json:"author"`
-					Created string                       `json:"created"`
-					Body    json.RawMessage              `json:"body"`
+					ID     string `json:"id"`
+					Author struct {
+						DisplayName string            `json:"displayName"`
+						AvatarUrls  map[string]string `json:"avatarUrls"`
+					} `json:"author"`
+					Created string          `json:"created"`
+					Body    json.RawMessage `json:"body"`
 				} `json:"comments"`
 			} `json:"comment"`
 		} `json:"fields"`
@@ -242,7 +248,7 @@ func (c *Client) IssueWithDescription(key string) (*IssueDetail, error) {
 	comments := make([]Comment, 0, len(body.Fields.Comment.Comments))
 	for _, cm := range body.Fields.Comment.Comments {
 		comments = append(comments, Comment{
-			Author: cm.Author.DisplayName, Created: cm.Created, Body: ADFMarkdown(cm.Body),
+			ID: cm.ID, Author: cm.Author.DisplayName, Avatar: cm.Author.AvatarUrls["48x48"], Created: cm.Created, Body: ADFMarkdown(cm.Body),
 		})
 	}
 	webLinks, _ := c.RemoteLinks(key)
