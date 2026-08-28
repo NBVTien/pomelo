@@ -401,6 +401,7 @@ struct ReviewPane: View {
 // Peeks a file at a line range in a side pane next to the review (not a modal).
 struct CodePeekPane: View {
     @EnvironmentObject var theme: ThemeManager
+    @ObservedObject private var codeDisplay = CodeDisplayManager.shared
     let target: CodePeekTarget
     let branch: String
     let isMain: Bool
@@ -442,6 +443,7 @@ struct CodePeekPane: View {
             if let content {
                 CodeView(content: content, lang: CodeLang.detect(path: target.path),
                                  start: target.start, end: target.end, isDark: theme.mode.isDark,
+                                 wrapMode: codeDisplay.wrapMode,
                                  onSelectLines: { sel in withAnimation(.easeInOut(duration: 0.12)) { selLines = sel } })
                     .id(target.id)
             } else {

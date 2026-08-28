@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 
 
 struct DiffLine: Identifiable, Sendable, Decodable, Equatable {
@@ -167,6 +166,7 @@ struct DiffFileList: View {
 
 struct DiffFilesView: View {
     @EnvironmentObject var theme: ThemeManager
+    @ObservedObject private var codeDisplay = CodeDisplayManager.shared
     let files: [DiffFile]?
     @Binding var selFile: String?
     @Binding var filesTreeVisible: Bool
@@ -194,9 +194,9 @@ struct DiffFilesView: View {
                                 } else if f.binary {
                                     centered("Binary file — no textual diff")
                                 } else if splitDiff {
-                                    CodeSplitView(file: f, isDark: theme.mode.isDark)
+                                    CodeSplitView(file: f, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
                                 } else {
-                                    CodeDiffView(file: f, isDark: theme.mode.isDark)
+                                    CodeDiffView(file: f, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
                                 }
                             } else {
                                 centered("Select a file")
@@ -342,17 +342,15 @@ import AppKit
 struct CodeDiffView: NSViewRepresentable {
     let file: DiffFile
     var isDark: Bool
+    var wrapMode: CodeWrapMode = activeCodeWrapMode
 
     func makeCoordinator() -> Coord { Coord() }
 
     func makeNSView(context: Context) -> NSScrollView {
         let tv = CodeTextView()
-        // Wrap, and inset past the margin the gutter is drawn into.
-        tv.configureReadOnly(inset: NSSize(width: CodeTextView.diffGutterWidth, height: 6), wraps: true)
+        tv.configureReadOnly(inset: NSSize(width: 0, height: 6))
         context.coordinator.textView = tv
-        let scroll = CodeTextView.makeScroll(tv)
-        scroll.hasHorizontalScroller = false
-        return scroll
+        return CodeTextView.makeScroll(tv)
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -360,9 +358,11 @@ struct CodeDiffView: NSViewRepresentable {
         scroll.appearance = ap
         guard let tv = context.coordinator.textView else { return }
         tv.appearance = ap
+        tv.configureReadOnly(inset: NSSize(width: 0, height: 6), wraps: wrapMode.wraps)
+        scroll.hasHorizontalScroller = !wrapMode.wraps
         // Theme-derived colours are baked into the string at build time, so a theme
         // switch must rebuild — hence isDark in the key.
-        let key = "\(file.path):\(isDark)"
+        let key = "\(file.path):\(isDark):\(wrapMode.rawValue)"
         if context.coordinator.key == key { return }
         context.coordinator.key = key
         tv.apply(CodeTextView.diff(file))
@@ -381,25 +381,23 @@ extension CodeTextView {
         let out = NSMutableAttributedString()
         var starts: [Int] = [], bg: [NSColor?] = [], cells: [GutterCell] = []
         func append(_ s: String, _ color: NSColor) {
-            out.append(NSAttributedString(string: s, attributes: [.font: mono, .foregroundColor: color, .paragraphStyle: para]))
+            out.append(NSAttributedString(string: s, attributes: CodeTextView.rowAttributes(font: mono, color: color, lineHeight: para.maximumLineHeight)))
         }
         for l in file.lines {
             starts.append(out.length)
             switch l.kind {
             case .hunk:
                 bg.append(hunkBg)
-                cells.append(GutterCell(old: "", new: "", sign: "", signColor: dim))
+                cells.append(GutterCell())
                 append(l.text + "\n", hunkC)
             default:
                 bg.append(l.kind == .add ? addBg : l.kind == .del ? delBg : nil)
-                let sign = l.kind == .add ? "+" : l.kind == .del ? "-" : ""
-                cells.append(GutterCell(old: l.oldN.map(String.init) ?? "",
-                                        new: l.newN.map(String.init) ?? "",
-                                        sign: sign,
+                cells.append(GutterCell(columns: [l.oldN.map(String.init) ?? "", l.newN.map(String.init) ?? ""],
+                                        sign: l.kind == .add ? "+" : l.kind == .del ? "-" : "",
                                         signColor: l.kind == .add ? addC : l.kind == .del ? delC : dim))
                 out.append(attributedLine(l.text + "\n", spans: Syntax.spans(l.text), font: mono, base: code, paragraph: para))
             }
         }
-        return CodeModel(string: out, starts: starts, lineBg: bg, gutters: cells)
+        return CodeModel(string: out, starts: starts, lineBg: bg, gutters: cells, gutterWidth: 82)
     }
 }
