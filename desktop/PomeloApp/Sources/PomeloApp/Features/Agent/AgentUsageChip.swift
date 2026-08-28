@@ -2,7 +2,7 @@ import SwiftUI
 
 // Claude subscription usage (5h session + weekly) as a compact meter. State is owned
 // by UsageStore (one poller, off-main, delta-guarded); the chip only renders it.
-struct ClaudeUsageChip: View {
+struct AgentUsageChip: View {
     @EnvironmentObject private var theme: ThemeManager
     @StateObject private var store = UsageStore.shared
     private var u: ClaudeUsage? { store.usage }

@@ -196,6 +196,14 @@ final class PomCore: @unchecked Sendable {
     func prRefresh() -> Data { command(domain: "pr", action: "refresh", params: Data("{}".utf8)) }
     func prCommitsData(branch: String, repo: String, base: String, isMain: Bool) -> Data { query(domain: "pr_commits", params: jp(["branch": branch, "repo": repo, "base": base, "is_main": isMain])) }
     func prDiffData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "pr_diff", params: jp(["branch": branch, "repo": repo, "is_main": isMain])) }
+    func reviewGetData(branch: String, isMain: Bool) -> Data { fetch(domain: "review_get", params: jp(["branch": branch, "is_main": isMain])) }
+    func filePeekData(branch: String, repo: String, path: String, isMain: Bool) -> Data { fetch(domain: "file_peek", params: jp(["branch": branch, "repo": repo, "path": path, "is_main": isMain])) }
+    func reviewThreadsData(branch: String, isMain: Bool) -> Data { fetch(domain: "review_threads", params: jp(["branch": branch, "is_main": isMain])) }
+    func reviewThreadAdd(branch: String, isMain: Bool, repo: String, path: String, start: Int, end: Int, side: String, body: String) -> Data {
+        command(domain: "review", action: "thread_add", params: jp(["branch": branch, "is_main": isMain, "repo": repo, "path": path, "start": start, "end": end, "side": side, "body": body]))
+    }
+    func reviewThreadReply(branch: String, isMain: Bool, id: String, body: String) -> Data { command(domain: "review", action: "thread_reply", params: jp(["branch": branch, "is_main": isMain, "id": id, "body": body])) }
+    func reviewThreadResolve(branch: String, isMain: Bool, id: String, resolved: Bool) -> Data { command(domain: "review", action: "thread_resolve", params: jp(["branch": branch, "is_main": isMain, "id": id, "resolved": resolved])) }
     func localChangesData(branch: String, isMain: Bool) -> Data { fetch(domain: "local_changes", params: jp(["branch": branch, "is_main": isMain])) }
     func localDiffData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "local_diff", params: jp(["branch": branch, "repo": repo, "is_main": isMain]))
     }

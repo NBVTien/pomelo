@@ -190,6 +190,19 @@ func (s *Server) Command(domain, action string, params json.RawMessage) any {
 		if action == "refresh" {
 			return s.PRRefresh()
 		}
+	case "review":
+		switch action {
+		case "thread_add":
+			var req reviewThreadAddReq
+			if json.Unmarshal(params, &req) != nil {
+				return map[string]any{"ok": false, "error": "bad json"}
+			}
+			return s.ReviewThreadAdd(req)
+		case "thread_reply":
+			return s.ReviewThreadReply(pStr(params, "branch"), pStr(params, "id"), pStr(params, "body"), pStr(params, "author"), pBool(params, "is_main"))
+		case "thread_resolve":
+			return s.ReviewThreadResolve(pStr(params, "branch"), pStr(params, "id"), pBool(params, "resolved"), pBool(params, "is_main"))
+		}
 	case "github":
 		if action == "test" {
 			return s.GithubTest(pStr(params, "token"))
@@ -316,6 +329,12 @@ func (s *Server) Fetch(domain string, params json.RawMessage) []byte {
 			return nil
 		}
 		return diffparse.ParseJSON(out)
+	case "review_get":
+		return s.ReviewGet(branch, isMain)
+	case "review_threads":
+		return s.ReviewThreads(branch, isMain)
+	case "file_peek":
+		return s.FilePeek(branch, repo, pStr(params, "path"), isMain)
 	case "local_changes":
 		return s.WorkspaceLocalChanges(branch, isMain)
 	case "local_diff":

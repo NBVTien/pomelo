@@ -397,11 +397,13 @@ struct DiffFileView: View {
 
     private func synColor(_ k: SynKind) -> Color {
         switch k {
-        case .keyword: return Theme.accent
-        case .string:  return Theme.ok
-        case .number:  return Theme.warn
-        case .comment: return Theme.dim
-        case .plain:   return Theme.fgSoft
+        case .keyword:  return Theme.accent
+        case .string:   return Theme.ok
+        case .number:   return Theme.warn
+        case .comment:  return Theme.dim
+        case .type:     return Theme.tool
+        case .function: return Theme.wsAccent
+        case .plain:    return Theme.fgSoft
         }
     }
 
@@ -497,7 +499,15 @@ struct DiffUnifiedView: View {
         let n = text.count
         func idx(_ o: Int) -> AttributedString.Index { a.characters.index(a.startIndex, offsetBy: min(max(o, 0), n)) }
         for sp in spans where sp.kind != .plain {
-            let c: Color = sp.kind == .keyword ? Theme.accent : sp.kind == .string ? Theme.ok : sp.kind == .number ? Theme.warn : Theme.dim
+            let c: Color
+            switch sp.kind {
+            case .keyword:  c = Theme.accent
+            case .string:   c = Theme.ok
+            case .number:   c = Theme.warn
+            case .type:     c = Theme.tool
+            case .function: c = Theme.wsAccent
+            default:        c = Theme.dim
+            }
             a[idx(sp.lo)..<idx(sp.hi)].foregroundColor = c
         }
         return Text(a).font(Theme.mono(11))
@@ -561,11 +571,13 @@ final class DiffTextView: NSTextView {
     private static let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
     private static func synColor(_ k: SynKind) -> NSColor {
         switch k {
-        case .keyword: return .systemPurple
-        case .string:  return .systemTeal
-        case .number:  return .systemOrange
-        case .comment: return .tertiaryLabelColor
-        case .plain:   return .labelColor
+        case .keyword:  return .systemPurple
+        case .string:   return .systemTeal
+        case .number:   return .systemOrange
+        case .comment:  return .tertiaryLabelColor
+        case .type:     return .systemCyan
+        case .function: return .systemPink
+        case .plain:    return .labelColor
         }
     }
     private static func gutter(_ n: Int?) -> String {

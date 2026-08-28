@@ -373,6 +373,7 @@ struct SplitHandle: View {
     @Binding var value: Double
     let min: Double
     let max: Double
+    var invert = false // handle sits AFTER the pane it sizes (a trailing pane): drag direction flips
     @State private var start: Double?
     @State private var active = false
 
@@ -391,7 +392,8 @@ struct SplitHandle: View {
             DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { g in
                     if start == nil { start = value; active = true }
-                    let delta = axis == .horizontal ? g.translation.width : g.translation.height
+                    let raw = axis == .horizontal ? g.translation.width : g.translation.height
+                    let delta = invert ? -raw : raw
                     value = Swift.min(max, Swift.max(min, (start ?? value) + delta))
                 }
                 .onEnded { _ in start = nil; active = false; NSCursor.arrow.set() }

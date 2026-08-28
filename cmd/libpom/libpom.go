@@ -75,6 +75,11 @@ func PomInit(cfgPath *C.char) *C.char {
 	} else {
 		log.Printf("app init: global claude MCP registered")
 	}
+	if err := claude.InstallGlobalSkills(); err != nil {
+		log.Printf("app init: install global skills: %v", err)
+	} else {
+		log.Printf("app init: global skills installed")
+	}
 	return C.CString("ok:" + cfg.Session)
 }
 

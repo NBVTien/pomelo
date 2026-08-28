@@ -38,6 +38,9 @@ private struct MCPPane: View {
                     statusRow("Registered in ~/.claude.json", ok: vm.status.registered)
                     statusRow("Wrapper script present", ok: vm.status.wrapper_ok)
                     statusRow("Connected (claude mcp list)", ok: vm.status.connected)
+                    statusRow(vm.status.skill_current ? "pom-review skill installed"
+                                : (vm.status.skill_installed ? "pom-review skill installed (update pending)" : "pom-review skill installed"),
+                              ok: vm.status.skill_current)
                     if !vm.status.command.isEmpty {
                         VStack(alignment: .leading, spacing: 3) {
                             SectionLabel(text: "COMMAND", size: 10)

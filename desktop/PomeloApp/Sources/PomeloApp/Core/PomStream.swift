@@ -14,9 +14,32 @@ final class StreamManager {
     private var installed = false
     var activeStreamID: Int32 = 0
     private let terminals = NSMapTable<NSNumber, TerminalView>.strongToWeakObjects()
+    private var claudeTermByWs: [String: Int32] = [:]
+    private var pendingClaudeText: [String: String] = [:]
 
     func registerTerminal(_ id: Int32, view: TerminalView) {
         terminals.setObject(view, forKey: NSNumber(value: id))
+    }
+
+    func registerClaudeTerminal(_ id: Int32, wsKey: String) {
+        guard id > 0 else { return }
+        claudeTermByWs[wsKey] = id
+        if let pending = pendingClaudeText[wsKey] {
+            pendingClaudeText[wsKey] = nil
+            // Let the freshly-attached claude prompt settle before typing into it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.sendText(id, pending) }
+        }
+    }
+
+    func unregisterClaudeTerminal(_ id: Int32, wsKey: String) {
+        if claudeTermByWs[wsKey] == id { claudeTermByWs[wsKey] = nil }
+    }
+
+    // Type text into the workspace's live Claude terminal (no newline — the reviewer
+    // reads it and presses Enter). Queues until the terminal mounts if it isn't open.
+    func askClaude(wsKey: String, text: String) {
+        if let id = claudeTermByWs[wsKey], id > 0 { sendText(id, text) }
+        else { pendingClaudeText[wsKey] = text }
     }
 
     func clearActive() {
