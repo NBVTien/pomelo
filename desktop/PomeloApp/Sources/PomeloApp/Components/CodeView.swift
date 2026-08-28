@@ -1,9 +1,15 @@
 import SwiftUI
 import AppKit
 
-// Shared read-only code viewer: one NSTextView-backed component (GPU-backed scrolling,
-// syntax highlight, gutter, a tinted line range) reused by every code surface instead
-// of each screen rolling its own. Mirrors CodeDiffView's approach.
+// One renderer for every read-only code surface (peek, unified + split diff). The view
+// is generic; a builder bakes the two things that differ — gutter text and per-line
+// background — into a CodeModel.
+struct CodeModel {
+    let string: NSAttributedString
+    let starts: [Int]
+    let lineBg: [NSColor?]
+}
+
 struct CodeView: NSViewRepresentable {
     let content: String
     let lang: CodeLang
@@ -20,7 +26,7 @@ struct CodeView: NSViewRepresentable {
         tv.textContainer?.lineFragmentPadding = 0
         context.coordinator.textView = tv
         tv.delegate = context.coordinator
-        return CodeTextViewBase.makeScroll(tv)
+        return CodeTextView.makeScroll(tv)
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -29,24 +35,22 @@ struct CodeView: NSViewRepresentable {
         guard let tv = context.coordinator.textView else { return }
         tv.appearance = ap
         context.coordinator.onSelectLines = onSelectLines
+        // Theme-derived colours are baked into the string at build time, so a theme
+        // switch must rebuild — hence isDark in the key.
         let key = "\(content.count):\(start):\(end):\(isDark)"
         if context.coordinator.key == key { return }
         context.coordinator.key = key
-        let built = CodeTextView.build(content, lang: lang, start: start, end: end)
-        tv.hitLo = built.hitLo
-        tv.hitHi = built.hitHi
-        tv.lineStarts = built.starts
-        tv.textStorage?.setAttributedString(built.string)
-        if let tc = tv.textContainer { tv.layoutManager?.ensureLayout(for: tc) }
-        tv.needsDisplay = true
+        let model = CodeTextView.peek(content, lang: lang, start: start, end: end)
+        tv.apply(model)
         DispatchQueue.main.async { scrollToTarget(tv) }
     }
 
-    // AppKit handles clip-view/frame timing; a manual boundingRect scroll landed at
-    // top before layout settled. Double-scroll pins the anchor near the top with context.
+    // Scroll below the anchor first, then to it, so it lands near the top with context;
+    // a single scroll fires before AppKit settles layout and stops at the top.
     private func scrollToTarget(_ tv: CodeTextView) {
         guard start > 1, start - 1 < tv.lineStarts.count else { return }
-        let below = min(tv.hitHi + 10, tv.lineStarts.count - 1)
+        let hitHi = min(max(start, end), tv.lineStarts.count) - 1
+        let below = min(hitHi + 10, tv.lineStarts.count - 1)
         tv.scrollRangeToVisible(NSRange(location: tv.lineStarts[below], length: 0))
         tv.scrollRangeToVisible(NSRange(location: tv.lineStarts[start - 1], length: 0))
     }
@@ -66,11 +70,17 @@ struct CodeView: NSViewRepresentable {
     }
 }
 
-// Shared parent for the read-only code text views (CodeView + CodeDiffView): line
-// index bookkeeping, the NSTextView read-only config, the scroll host, one line-height
-// paragraph builder, and the single syntax-highlighted-line builder.
-class CodeTextViewBase: NSTextView {
+final class CodeTextView: NSTextView {
     var lineStarts: [Int] = []
+    private var lineBg: [NSColor?] = []
+
+    func apply(_ model: CodeModel) {
+        lineStarts = model.starts
+        lineBg = model.lineBg
+        textStorage?.setAttributedString(model.string)
+        if let tc = textContainer { layoutManager?.ensureLayout(for: tc) }
+        needsDisplay = true
+    }
 
     func lineIndex(forChar c: Int) -> Int {
         var lo = 0, hi = lineStarts.count - 1, ans = 0
@@ -113,13 +123,10 @@ class CodeTextViewBase: NSTextView {
         return p
     }
 
-    // One syntax-highlighted code line — the shared core; each subclass supplies its
-    // own font/base/paragraph and its own gutter/backdrop.
     static func attributedLine(_ text: String, spans: [SynSpan], font: NSFont, base: NSColor,
-                               paragraph: NSParagraphStyle? = nil) -> NSMutableAttributedString {
-        var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: base]
-        if let paragraph { attrs[.paragraphStyle] = paragraph }
-        let a = NSMutableAttributedString(string: text, attributes: attrs)
+                               paragraph: NSParagraphStyle) -> NSMutableAttributedString {
+        let a = NSMutableAttributedString(string: text,
+                                          attributes: [.font: font, .foregroundColor: base, .paragraphStyle: paragraph])
         for sp in spans where sp.kind != .plain {
             guard let l = text.index(text.startIndex, offsetBy: sp.lo, limitedBy: text.endIndex),
                   let h = text.index(text.startIndex, offsetBy: sp.hi, limitedBy: text.endIndex), l < h else { continue }
@@ -127,49 +134,195 @@ class CodeTextViewBase: NSTextView {
         }
         return a
     }
+
+    // Fill one rect per contiguous same-colour run from its character range, not per
+    // dirty band — per-band fills round differently at band edges and leave hairline seams.
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard let lm = layoutManager, let tc = textContainer, let storage = textStorage,
+              !lineStarts.isEmpty, !lineBg.isEmpty else { return }
+        NSGraphicsContext.current?.shouldAntialias = false
+        defer { NSGraphicsContext.current?.shouldAntialias = true }
+        let inset = textContainerInset.height
+        let width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
+        var i = 0
+        while i < lineBg.count {
+            guard let color = lineBg[i] else { i += 1; continue }
+            var j = i
+            while j + 1 < lineBg.count, lineBg[j + 1] == color { j += 1 }
+            let firstChar = lineStarts[i]
+            let lastChar = j + 1 < lineStarts.count ? lineStarts[j + 1] : storage.length
+            let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: firstChar, length: max(0, lastChar - firstChar)),
+                                           actualCharacterRange: nil)
+            var r = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+            r.origin.y += inset
+            r.origin.x = 0
+            r.size.width = width
+            color.setFill()
+            backingAlignedRect(r, options: .alignAllEdgesOutward).fill()
+            i = j + 1
+        }
+    }
 }
 
-final class CodeTextView: CodeTextViewBase {
-    var hitLo = -1   // 0-based first highlighted line (inclusive)
-    var hitHi = -1   // 0-based last highlighted line (inclusive)
+extension CodeTextView {
+    // Blend a tint onto the opaque editor background so a single fill reads as the
+    // intended colour on any theme (no alpha doubling where runs meet).
+    static func opaque(_ tint: NSColor, _ a: CGFloat) -> NSColor {
+        let base = NSColor(Theme.bg).usingColorSpace(.sRGB) ?? .black
+        let t = tint.usingColorSpace(.sRGB) ?? tint
+        return NSColor(srgbRed: base.redComponent * (1 - a) + t.redComponent * a,
+                       green: base.greenComponent * (1 - a) + t.greenComponent * a,
+                       blue: base.blueComponent * (1 - a) + t.blueComponent * a, alpha: 1)
+    }
 
-    private static let mono = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
-    private static let para = CodeTextViewBase.paragraph(lineHeight: 20)
-
-    static func build(_ content: String, lang: CodeLang, start: Int, end: Int)
-        -> (string: NSAttributedString, starts: [Int], hitLo: Int, hitHi: Int) {
+    static func peek(_ content: String, lang: CodeLang, start: Int, end: Int) -> CodeModel {
+        let mono = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
+        let para = paragraph(lineHeight: 20)
         let lines = content.components(separatedBy: "\n")
         let spansPerLine = Syntax.tokenize(content, lang: lang)
         let gutterW = max(3, String(lines.count).count)
         let dim = NSColor.tertiaryLabelColor, code = NSColor.labelColor
-        let out = NSMutableAttributedString()
-        var starts: [Int] = []
+        let anchor = NSColor.controlAccentColor.withAlphaComponent(0.16)
         let hitLo = start > 0 ? min(start, lines.count) - 1 : -1
         let hitHi = start > 0 ? min(max(start, end), lines.count) - 1 : -1
+        let out = NSMutableAttributedString()
+        var starts: [Int] = [], bg: [NSColor?] = []
         for (i, line) in lines.enumerated() {
             starts.append(out.length)
+            bg.append(hitLo >= 0 && i >= hitLo && i <= hitHi ? anchor : nil)
             let num = String(i + 1)
             let pad = String(repeating: " ", count: max(0, gutterW - num.count))
             out.append(NSAttributedString(string: pad + num + "  ", attributes: [.font: mono, .foregroundColor: dim, .paragraphStyle: para]))
             let spans = i < spansPerLine.count ? spansPerLine[i] : []
             out.append(attributedLine(line + "\n", spans: spans, font: mono, base: code, paragraph: para))
         }
-        return (out, starts, hitLo, hitHi)
+        return CodeModel(string: out, starts: starts, lineBg: bg)
     }
 
-    override func drawBackground(in rect: NSRect) {
-        super.drawBackground(in: rect)
-        guard hitLo >= 0, hitLo < lineStarts.count, let lm = layoutManager, let tc = textContainer,
-              let storage = textStorage else { return }
-        let firstChar = lineStarts[hitLo]
-        let lastChar = hitHi + 1 < lineStarts.count ? lineStarts[hitHi + 1] : storage.length
-        let glyphRange = lm.glyphRange(forCharacterRange: NSRange(location: firstChar, length: max(0, lastChar - firstChar)),
-                                       actualCharacterRange: nil)
-        var r = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
-        r.origin.y += textContainerInset.height
-        r.origin.x = 0
-        r.size.width = max(bounds.width, enclosingScrollView?.contentSize.width ?? 0)
-        NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
-        r.fill()
+    enum Side { case left, right }
+
+    // Rows are paired upstream (splitRows) so both columns align line-for-line; a nil
+    // cell renders as a blank padded row.
+    static func splitSide(_ rows: [SplitRow], side: Side) -> CodeModel {
+        let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let para = paragraph(lineHeight: 18)
+        let dim = NSColor.tertiaryLabelColor, code = NSColor.labelColor
+        let tint: NSColor = side == .left ? .systemRed : .systemGreen
+        let rowBg = opaque(tint, 0.12), padBg = opaque(.gray, 0.06), hunkBg = opaque(.systemPurple, 0.10)
+        let charBg = tint.withAlphaComponent(0.32)
+        let out = NSMutableAttributedString()
+        var starts: [Int] = [], bg: [NSColor?] = []
+        func append(_ s: String, _ color: NSColor) {
+            out.append(NSAttributedString(string: s, attributes: [.font: mono, .foregroundColor: color, .paragraphStyle: para]))
+        }
+        func num(_ n: Int?) -> String {
+            let s = n.map(String.init) ?? ""
+            return String(repeating: " ", count: max(0, 4 - s.count)) + s
+        }
+        for r in rows {
+            starts.append(out.length)
+            if let h = r.hunk {
+                bg.append(hunkBg)
+                append(side == .left ? h + "\n" : "\n", .systemPurple)
+                continue
+            }
+            let n = side == .left ? r.leftN : r.rightN
+            let text = side == .left ? r.left : r.right
+            let spans = side == .left ? r.leftSpans : r.rightSpans
+            let hi = side == .left ? r.leftHi : r.rightHi
+            guard let text else { bg.append(padBg); append("\n", dim); continue }
+            bg.append(r.changed ? rowBg : nil)
+            append(num(n) + "  ", dim)
+            let line = attributedLine(text + "\n", spans: spans, font: mono, base: code, paragraph: para)
+            if r.changed, let hi, !hi.isEmpty,
+               let l = text.index(text.startIndex, offsetBy: hi.lowerBound, limitedBy: text.endIndex),
+               let u = text.index(text.startIndex, offsetBy: hi.upperBound, limitedBy: text.endIndex) {
+                line.addAttribute(.backgroundColor, value: charBg, range: NSRange(l..<u, in: text))
+            }
+            out.append(line)
+        }
+        return CodeModel(string: out, starts: starts, lineBg: bg)
+    }
+}
+
+struct CodeSplitView: NSViewRepresentable {
+    let file: DiffFile
+    var isDark: Bool
+
+    func makeCoordinator() -> Coord { Coord() }
+
+    func makeNSView(context: Context) -> NSView {
+        let c = context.coordinator
+        let left = CodeTextView(); left.configureReadOnly(inset: NSSize(width: 0, height: 6))
+        let right = CodeTextView(); right.configureReadOnly(inset: NSSize(width: 0, height: 6))
+        let ls = CodeTextView.makeScroll(left), rs = CodeTextView.makeScroll(right)
+        let divider = NSView(); divider.wantsLayer = true
+        for v in [ls, rs, divider] { v.translatesAutoresizingMaskIntoConstraints = false }
+        let container = NSView()
+        container.addSubview(ls); container.addSubview(divider); container.addSubview(rs)
+        NSLayoutConstraint.activate([
+            ls.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            ls.topAnchor.constraint(equalTo: container.topAnchor),
+            ls.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            divider.leadingAnchor.constraint(equalTo: ls.trailingAnchor),
+            divider.widthAnchor.constraint(equalToConstant: 1),
+            divider.topAnchor.constraint(equalTo: container.topAnchor),
+            divider.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            rs.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
+            rs.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            rs.topAnchor.constraint(equalTo: container.topAnchor),
+            rs.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ls.widthAnchor.constraint(equalTo: rs.widthAnchor),
+        ])
+        c.left = left; c.right = right; c.divider = divider
+        c.installSync(ls, rs)
+        return container
+    }
+
+    // Fill the offered space; otherwise the container reports its content-sized subviews'
+    // width and the two columns sum widths and overflow instead of splitting the pane.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions(by: CGSize(width: 400, height: 300))
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        let c = context.coordinator
+        c.divider?.layer?.backgroundColor = NSColor(Theme.borderSoft).cgColor
+        let key = "\(file.path):\(isDark)"
+        if c.key == key { return }
+        c.key = key
+        let rows = splitRows(file)
+        c.left?.apply(CodeTextView.splitSide(rows, side: .left))
+        c.right?.apply(CodeTextView.splitSide(rows, side: .right))
+    }
+
+    final class Coord {
+        weak var left: CodeTextView?
+        weak var right: CodeTextView?
+        weak var divider: NSView?
+        var key = ""
+        private var syncing = false
+        private var tokens: [NSObjectProtocol] = []
+
+        func installSync(_ ls: NSScrollView, _ rs: NSScrollView) {
+            for sv in [ls, rs] { sv.contentView.postsBoundsChangedNotifications = true }
+            tokens.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: ls.contentView, queue: .main) { [weak self] _ in self?.mirror(from: ls, to: rs) })
+            tokens.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: rs.contentView, queue: .main) { [weak self] _ in self?.mirror(from: rs, to: ls) })
+        }
+
+        private func mirror(from: NSScrollView, to: NSScrollView) {
+            guard !syncing else { return }
+            syncing = true; defer { syncing = false }
+            let src = from.contentView.bounds.origin
+            var o = to.contentView.bounds.origin
+            guard abs(o.x - src.x) > 0.5 || abs(o.y - src.y) > 0.5 else { return }
+            o.x = src.x; o.y = src.y
+            to.contentView.setBoundsOrigin(o)
+            to.reflectScrolledClipView(to.contentView)
+        }
+
+        deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
     }
 }
