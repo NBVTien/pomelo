@@ -6,6 +6,26 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-29
+
+### Added
+- Commits tab: click a commit to see the diff it introduced, in the same tree + viewer as Files (Esc to go back). (#58)
+- A wrap-vs-scroll preference for read-only code views (Settings > Appearance). (#58)
+- Agent usage: click the top-bar meter for a card with each window's used %, reset time (absolute + countdown), and the signed-in account. (#65)
+- Dependency store shortcut (Shift-Cmd-D), listed in Settings > Shortcuts. (#65)
+
+### Changed
+- Selecting code in a unified diff now copies just the code — line numbers and +/- markers are drawn in the margin, not part of the text. (#58)
+- Every read-only code surface (review peek, unified and split diff) is drawn by one renderer, so highlighting, line height, selection, and theming match everywhere. (#63)
+- The Review tab is hidden on the main workspace (it reviews a branch's changes), while the agent is now available there. (#64)
+- Top bar uses the Claude mark for the usage meter and a distinct shared-services icon (no longer clashing with the Database tab). (#65)
+
+### Fixed
+- Diff line backgrounds no longer show faint horizontal stripes on rows revealed while scrolling. (#63)
+- Code and section headers recolor immediately when switching theme (dark, light, sepia) instead of keeping the previous palette. (#63)
+- Reviews are found by workspace name (not the git branch), so a generated review reliably appears in the Review tab. (#64)
+- The dev-proxy routes to a service's allocated port immediately, instead of briefly latching onto a transient build socket and needing several reloads to settle. (#66)
+
 ## [0.3.5] - 2026-08-28
 
 ### Changed
