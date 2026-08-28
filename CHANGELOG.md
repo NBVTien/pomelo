@@ -6,6 +6,15 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-08-28
+
+### Changed
+- The review peek and PR diff now share one code renderer, so syntax highlighting, line height, and selection behave identically across both. (#62)
+
+### Fixed
+- Diff line backgrounds no longer show faint horizontal stripes on rows revealed while scrolling. (#62)
+- Code text in the diff and peek, and the LOCAL CHANGES / PULL REQUESTS section headers, recolor immediately when you switch theme (dark, light, sepia) instead of keeping the previous palette. (#62)
+
 ## [0.3.4] - 2026-08-28
 
 ### Added
