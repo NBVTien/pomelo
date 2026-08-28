@@ -30,6 +30,8 @@ struct RootView: View {
                     }
                 }
             }
+            .overlay(ImagePreviewOverlay())
+            .animation(.easeOut(duration: 0.12), value: ImagePreviewState.shared.isOpen)
             .overlay(TooltipOverlay().zIndex(2000))
             .animation(.easeOut(duration: 0.14), value: state.prPeek)
             .background(

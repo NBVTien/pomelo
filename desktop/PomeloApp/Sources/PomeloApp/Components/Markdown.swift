@@ -11,10 +11,13 @@ struct MarkdownText: View {
     private var lineGap: CGFloat { reading ? 6 : 2 }
 
     var body: some View {
+        let bs = blocks
+        let gallery: [GalleryImage] = bs.compactMap { if case .image(let alt, let url) = $0 { return GalleryImage(url: url, alt: alt) } else { return nil } }
         VStack(alignment: .leading, spacing: reading ? 12 : 8) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in view(b) }
+            ForEach(Array(bs.enumerated()), id: \.offset) { _, b in view(b) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .environment(\.imageGallery, gallery)
     }
 
     private struct ListItem { let depth: Int; let ordered: Bool; let text: String }
@@ -327,8 +330,10 @@ extension MarkdownText {
 struct MarkdownImage: View {
     let url: String
     var alt: String = ""
+    @Environment(\.imageGallery) private var gallery
     @State private var image: NSImage?
     @State private var failed = false
+    @State private var hovered = false
 
     var body: some View {
         Group {
@@ -336,7 +341,14 @@ struct MarkdownImage: View {
                 Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
                     .frame(maxWidth: 520, alignment: .leading)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Theme.borderSoft))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(hovered ? Theme.accent.opacity(0.6) : Theme.borderSoft))
+                    .contentShape(Rectangle())
+                    .onHover { hovered = $0; if $0 { NSCursor.pointingHand.push() } else { NSCursor.pop() } }
+                    .onTapGesture {
+                        let g = gallery.isEmpty ? [GalleryImage(url: url, alt: alt)] : gallery
+                        ImagePreviewState.shared.show(g, at: g.firstIndex { $0.url == url } ?? 0)
+                    }
+                    .help("Click to preview")
             } else if failed {
                 Label(alt.isEmpty ? "image unavailable" : alt, systemImage: "photo")
                     .font(.system(size: 11)).foregroundStyle(Theme.dim)
