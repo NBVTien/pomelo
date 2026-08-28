@@ -57,11 +57,18 @@ func (s *Server) MCPGlobalStatus() map[string]any {
 		s := string(probeOut)
 		out["connected"] = strings.Contains(s, `"result"`) && strings.Contains(s, "serverInfo")
 	}
+	inst, current, skillPath := claude.SkillsInstalled()
+	out["skill_installed"] = inst
+	out["skill_current"] = current
+	out["skill_path"] = skillPath
 	return out
 }
 
 func (s *Server) MCPGlobalReinstall() map[string]any {
 	if err := claude.InstallGlobalClaudeMCP(); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	if err := claude.InstallGlobalSkills(); err != nil {
 		return map[string]any{"ok": false, "error": err.Error()}
 	}
 	return map[string]any{"ok": true}

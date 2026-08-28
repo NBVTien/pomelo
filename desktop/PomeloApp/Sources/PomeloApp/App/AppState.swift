@@ -52,6 +52,7 @@ final class AppState: ObservableObject {
             case "2": if !ws.isMain { ps.pane = .prs }; return nil
             case "3": if !ws.isMain { ps.pane = .jira }; return nil
             case "4": ps.pane = .database; return nil   // Database — valid on main too
+            case "5": ps.pane = .review; return nil
 
             case "0": self.openActivity(scope: ws.id); return nil
             case "i": if !ws.isMain { ps.pane = .claude }; return nil

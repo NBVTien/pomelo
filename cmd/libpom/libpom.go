@@ -37,7 +37,7 @@ var (
 	appDir string
 )
 
-const appVersion = "0.3.3"
+const appVersion = "0.3.5"
 
 //export PomInit
 func PomInit(cfgPath *C.char) *C.char {
@@ -74,6 +74,11 @@ func PomInit(cfgPath *C.char) *C.char {
 		log.Printf("app init: install global claude MCP: %v", err)
 	} else {
 		log.Printf("app init: global claude MCP registered")
+	}
+	if err := claude.InstallGlobalSkills(); err != nil {
+		log.Printf("app init: install global skills: %v", err)
+	} else {
+		log.Printf("app init: global skills installed")
 	}
 	return C.CString("ok:" + cfg.Session)
 }

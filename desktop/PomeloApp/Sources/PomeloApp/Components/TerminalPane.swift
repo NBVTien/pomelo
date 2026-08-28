@@ -5,6 +5,9 @@ struct TerminalPane: NSViewRepresentable {
     let holderName: String
     let wsKey: String
     var autorun: String? = nil
+    // When set, the pty stream is registered as this workspace's agent terminal so
+    // "Ask agent" can type into it (see StreamManager.askClaude).
+    var agentWsKey: String? = nil
     var fontSize: CGFloat = 12
     var themeMode: ThemeMode = activeThemeMode
     var onClosed: () -> Void = {}
@@ -18,7 +21,7 @@ struct TerminalPane: NSViewRepresentable {
         tv.nativeBackgroundColor = NSColor(Theme.bg)
         tv.nativeForegroundColor = NSColor(Theme.fg)
         context.coordinator.onClosed = onClosed
-        context.coordinator.attach(view: tv, name: holderName, wsKey: wsKey, autorun: autorun)
+        context.coordinator.attach(view: tv, name: holderName, wsKey: wsKey, autorun: autorun, agentWsKey: agentWsKey)
         return tv
     }
 
@@ -46,6 +49,7 @@ struct TerminalPane: NSViewRepresentable {
         private var resizeWork: DispatchWorkItem?
         var onClosed: () -> Void = {}
         private var closedFired = false
+        private var agentWsKey: String?
 
         @MainActor
         func syncSize(_ view: TerminalView) {
@@ -68,8 +72,9 @@ struct TerminalPane: NSViewRepresentable {
         }
 
         @MainActor
-        func attach(view: TerminalView, name: String, wsKey: String, autorun: String? = nil) {
+        func attach(view: TerminalView, name: String, wsKey: String, autorun: String? = nil, agentWsKey: String? = nil) {
             self.view = view
+            self.agentWsKey = agentWsKey
             let size = view.getTerminal()
             let cols = Int32(size.cols), rows = Int32(size.rows)
             Task { @MainActor in
@@ -88,6 +93,7 @@ struct TerminalPane: NSViewRepresentable {
                 }
                 self.streamID = id
                 if id > 0 { StreamManager.shared.registerTerminal(id, view: view) }
+                if id > 0, let k = agentWsKey { StreamManager.shared.registerClaudeTerminal(id, wsKey: k) }
                 if let cmd = autorun, id > 0 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                         StreamManager.shared.send(id, Array("\(cmd)\r".utf8)[...])
@@ -118,6 +124,7 @@ struct TerminalPane: NSViewRepresentable {
         @MainActor
         func detach() {
             sizeTimer?.invalidate(); sizeTimer = nil
+            if let k = agentWsKey { StreamManager.shared.unregisterClaudeTerminal(streamID, wsKey: k) }
             StreamManager.shared.close(streamID)
             streamID = 0
         }

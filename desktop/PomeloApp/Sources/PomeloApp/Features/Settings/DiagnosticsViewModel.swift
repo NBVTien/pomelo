@@ -6,6 +6,7 @@ final class MCPViewModel: ObservableObject {
     struct Status: Decodable {
         var registered = false, connected = false, wrapper_ok = false
         var command = "", list_line = ""
+        var skill_installed = false, skill_current = false, skill_path = ""
         init() {}
         init(from d: Decoder) throws {
             let c = try d.container(keyedBy: K.self)
@@ -14,8 +15,11 @@ final class MCPViewModel: ObservableObject {
             wrapper_ok = try c.decodeIfPresent(Bool.self, forKey: .wrapper_ok) ?? false
             command = try c.decodeIfPresent(String.self, forKey: .command) ?? ""
             list_line = try c.decodeIfPresent(String.self, forKey: .list_line) ?? ""
+            skill_installed = try c.decodeIfPresent(Bool.self, forKey: .skill_installed) ?? false
+            skill_current = try c.decodeIfPresent(Bool.self, forKey: .skill_current) ?? false
+            skill_path = try c.decodeIfPresent(String.self, forKey: .skill_path) ?? ""
         }
-        enum K: String, CodingKey { case registered, connected, wrapper_ok, command, list_line }
+        enum K: String, CodingKey { case registered, connected, wrapper_ok, command, list_line, skill_installed, skill_current, skill_path }
     }
     @Published private(set) var status = Status()
     @Published private(set) var loading = true

@@ -3,10 +3,15 @@ import SwiftUI
 struct MarkdownText: View {
     @EnvironmentObject var theme: ThemeManager
     let text: String
-    init(_ text: String) { self.text = text }
+    // Long-form prose (the Review doc) wants bigger type + air; chat/inline keeps it compact.
+    var reading = false
+    init(_ text: String, reading: Bool = false) { self.text = text; self.reading = reading }
+
+    private var bodySize: CGFloat { reading ? 14 : 12.5 }
+    private var lineGap: CGFloat { reading ? 6 : 2 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: reading ? 12 : 8) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in view(b) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -226,11 +231,13 @@ struct MarkdownText: View {
         switch b {
         case .heading(let n, let s):
             Text(inline(s))
-                .font(.system(size: n <= 1 ? 17 : n == 2 ? 15 : 13.5, weight: .semibold))
+                .font(.system(size: reading ? (n <= 1 ? 20 : n == 2 ? 16.5 : 14.5) : (n <= 1 ? 17 : n == 2 ? 15 : 13.5),
+                              weight: .semibold))
                 .foregroundStyle(Theme.fg)
-                .padding(.top, 2)
+                .padding(.top, reading ? 6 : 2)
         case .paragraph(let s):
-            Text(inline(s)).font(.system(size: 12.5)).foregroundStyle(Theme.fgSoft)
+            Text(inline(s)).font(.system(size: bodySize, weight: .regular)).foregroundStyle(Theme.fgSoft)
+                .lineSpacing(lineGap)
                 .tint(Theme.accent).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         case .code(let s):
@@ -239,7 +246,7 @@ struct MarkdownText: View {
                 .padding(10).background(Theme.panel3, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.borderSoft))
         case .list(let items):
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: reading ? 6 : 4) {
                 ForEach(Array(markers(items).enumerated()), id: \.offset) { _, row in
                     HStack(alignment: .top, spacing: 8) {
                         if let (checked, _) = task(row.item.text) {
@@ -247,10 +254,11 @@ struct MarkdownText: View {
                                 .font(.system(size: 12)).foregroundStyle(checked ? Theme.accent : Theme.dim)
                                 .frame(width: 16, alignment: .center)
                         } else {
-                            Text(row.marker).font(.system(size: 12.5)).foregroundStyle(Theme.dim)
+                            Text(row.marker).font(.system(size: bodySize)).foregroundStyle(Theme.dim)
                                 .frame(width: 20, alignment: .trailing)
                         }
-                        Text(inline(task(row.item.text)?.1 ?? row.item.text)).font(.system(size: 12.5))
+                        Text(inline(task(row.item.text)?.1 ?? row.item.text)).font(.system(size: bodySize, weight: .regular))
+                            .lineSpacing(lineGap)
                             .foregroundStyle(Theme.fgSoft).tint(Theme.accent).fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(.leading, CGFloat(row.item.depth) * 18)

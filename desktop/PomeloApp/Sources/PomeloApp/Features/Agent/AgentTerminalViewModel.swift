@@ -3,7 +3,7 @@ import Foundation
 // FFI seam for the Claude terminal pane: resolve the host window and reap the pane.
 // The View keeps its own UI state and calls these (ADR 0001).
 @MainActor
-final class ClaudeTerminalViewModel: ObservableObject {
+final class AgentTerminalViewModel: ObservableObject {
     func resolveWindow(branch: String, isMain: Bool) async -> String? {
         await Task.detached(priority: .userInitiated) { () -> String? in
             struct R: Decodable { var window: String? }

@@ -1,13 +1,13 @@
 import SwiftUI
 
-struct ClaudeTerminal: View {
+struct AgentTerminal: View {
     @EnvironmentObject var state: AppState
     let branch: String
     let isMain: Bool
     let wsKey: String
     var onClose: () -> Void = {}
 
-    @StateObject private var vm = ClaudeTerminalViewModel()
+    @StateObject private var vm = AgentTerminalViewModel()
     @State private var holder: String?
     @AppStorage("claudeFontSize") private var fontSize: Double = 12
     @State private var failed = false
@@ -45,19 +45,19 @@ struct ClaudeTerminal: View {
             Divider().overlay(Theme.borderSoft)
             if exited {
                 VStack(spacing: 10) {
-                    Text("Claude session ended").font(.system(size: 12.5)).foregroundStyle(Theme.fgMuted)
+                    Text("Agent session ended").font(.system(size: 12.5)).foregroundStyle(Theme.fgMuted)
                     Button { restart() } label: {
-                        HStack(spacing: 5) { Image(systemName: "arrow.clockwise").font(.system(size: 11)); Text("Restart Claude").font(.system(size: 12, weight: .medium)) }
+                        HStack(spacing: 5) { Image(systemName: "arrow.clockwise").font(.system(size: 11)); Text("Restart agent").font(.system(size: 12, weight: .medium)) }
                             .foregroundStyle(Theme.accent).padding(.horizontal, 12).padding(.vertical, 5)
                             .background(Theme.accentSoft, in: Capsule())
                     }.buttonStyle(.plain)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
             } else if let h = holder {
-                TerminalPane(holderName: h, wsKey: wsKey, fontSize: CGFloat(fontSize),
+                TerminalPane(holderName: h, wsKey: wsKey, agentWsKey: wsKey, fontSize: CGFloat(fontSize),
                              onClosed: { onHolderClosed() }).id(h)
             } else if failed {
-                Text("Could not start Claude").font(.system(size: 12)).foregroundStyle(Theme.danger)
+                Text("Could not start agent").font(.system(size: 12)).foregroundStyle(Theme.danger)
                     .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
             } else {
                 // Delay the spinner: re-attaching to an existing session resolves in
@@ -65,7 +65,7 @@ struct ClaudeTerminal: View {
                 VStack(spacing: 8) {
                     if slowStart {
                         Spinner()
-                        Text("starting claude…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
+                        Text("starting agent…").font(.system(size: 12)).foregroundStyle(Theme.fgMuted)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
@@ -86,7 +86,7 @@ struct ClaudeTerminal: View {
     private var header: some View {
         HStack(spacing: 8) {
             AgentOrb(color: agentColor, active: agentActive, size: 8)
-            Text("claude · \(branch)").font(Theme.mono(12)).foregroundStyle(Theme.fgMuted)
+            Text("agent · \(branch)").font(Theme.mono(12)).foregroundStyle(Theme.fgMuted)
             Spacer()
             Button { shrinkFont() } label: { Text("A-").font(.system(size: 12)) }
                 .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).help("Smaller (⌘−)")
@@ -100,7 +100,7 @@ struct ClaudeTerminal: View {
             }
             .buttonStyle(.plain)
             .keyboardShortcut("w", modifiers: [.command, .shift])
-            .help("Close Claude (⌘⇧W)")
+            .help("Close agent (⌘⇧W)")
             Button { growFont() } label: { EmptyView() }
                 .buttonStyle(.plain).frame(width: 0, height: 0).opacity(0)
                 .keyboardShortcut("+", modifiers: .command)

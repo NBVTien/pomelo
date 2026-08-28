@@ -62,6 +62,12 @@ final class MockPomAPI: PomAPI {
     func prCommentsData(branch: String, repo: String, isMain: Bool) -> Data { Data(#"{"comments":[]}"#.utf8) }
     func prTimelineData(branch: String, repo: String, isMain: Bool) -> Data { Data(#"{"items":[]}"#.utf8) }
     func prRefresh() -> Data { Data(#"{"ok":true}"#.utf8) }
+    func reviewGetData(branch: String, isMain: Bool) -> Data { Data(#"{"exists":false}"#.utf8) }
+    func filePeekData(branch: String, repo: String, path: String, isMain: Bool) -> Data { Data(#"{"content":""}"#.utf8) }
+    func reviewThreadsData(branch: String, isMain: Bool) -> Data { Data(#"{"threads":[]}"#.utf8) }
+    func reviewThreadAdd(branch: String, isMain: Bool, repo: String, path: String, start: Int, end: Int, side: String, body: String) -> Data { Data(#"{"ok":true}"#.utf8) }
+    func reviewThreadReply(branch: String, isMain: Bool, id: String, body: String) -> Data { Data(#"{"ok":true}"#.utf8) }
+    func reviewThreadResolve(branch: String, isMain: Bool, id: String, resolved: Bool) -> Data { Data(#"{"ok":true}"#.utf8) }
     func prCommitsData(branch: String, repo: String, base: String, isMain: Bool) -> Data { Data(#"{"commits":[]}"#.utf8) }
     func prDiffData(branch: String, repo: String, isMain: Bool) -> Data { Data() }
     func jiraBoardsData() -> Data { Data(#"{"configured":false}"#.utf8) }
