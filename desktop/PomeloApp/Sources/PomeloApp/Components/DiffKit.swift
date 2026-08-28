@@ -398,6 +398,8 @@ extension CodeTextView {
                 out.append(attributedLine(l.text + "\n", spans: Syntax.spans(l.text), font: mono, base: code, paragraph: para))
             }
         }
-        return CodeModel(string: out, starts: starts, lineBg: bg, gutters: cells, gutterWidth: 82)
+        let maxN = cells.compactMap { $0.columns.compactMap(Int.init).max() }.max() ?? 0
+        return CodeModel(string: out, starts: starts, lineBg: bg, gutters: cells,
+                         gutterWidth: CodeTextView.Gutter.width(columns: 2, maxLine: maxN, sign: true))
     }
 }

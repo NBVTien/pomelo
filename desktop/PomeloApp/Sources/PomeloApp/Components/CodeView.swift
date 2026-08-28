@@ -87,16 +87,40 @@ struct CodeView: NSViewRepresentable {
 }
 
 final class CodeTextView: NSTextView {
+    // One source for the margin geometry: drawGutter lays columns out with these,
+    // and each builder sizes its reserved width from them, so a wide line number
+    // cannot silently clip.
+    enum Gutter {
+        static let gap: CGFloat = 4
+        static let signWidth: CGFloat = 10
+        private static let digitWidth: CGFloat = 6.2   // 9.5pt monospaced advance
+        private static let minDigits = 3
+
+        /// A column wide enough for `maxLine`, so a five-digit file does not clip.
+        static func columnWidth(maxLine: Int) -> CGFloat {
+            CGFloat(max(minDigits, String(max(1, maxLine)).count)) * digitWidth + 6
+        }
+
+        /// Reserved width for `columns` number columns, plus a sign column when used.
+        static func width(columns: Int, maxLine: Int, sign: Bool = false) -> CGFloat {
+            gap + CGFloat(columns) * (columnWidth(maxLine: maxLine) + gap) + (sign ? signWidth + gap : 0)
+        }
+    }
+
     var lineStarts: [Int] = []
     private var lineBg: [NSColor?] = []
     private var gutters: [GutterCell] = []
     private var gutterWidth: CGFloat = 0
+    private var maxGutterLine = 0
 
     func apply(_ model: CodeModel) {
         lineStarts = model.starts
         lineBg = model.lineBg
         gutters = model.gutters
         gutterWidth = model.gutterWidth
+        maxGutterLine = model.gutters.reduce(0) { m, c in
+            max(m, c.columns.compactMap { Int($0) }.max() ?? 0)
+        }
         if model.gutterWidth > 0 {
             textContainerInset = NSSize(width: model.gutterWidth, height: textContainerInset.height)
         }
@@ -218,7 +242,11 @@ final class CodeTextView: NSTextView {
     // copied result is the code without line numbers or +/- markers.
     private func drawGutter(lm: NSLayoutManager, tc: NSTextContainer) {
         guard !gutters.isEmpty, gutterWidth > 0 else { return }
+        // The row fills run with antialiasing off; text needs it back on, and this
+        // owns the change rather than leaning on the caller's defer.
+        let wasAntialiased = NSGraphicsContext.current?.shouldAntialias ?? true
         NSGraphicsContext.current?.shouldAntialias = true
+        defer { NSGraphicsContext.current?.shouldAntialias = wasAntialiased }
         let font = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .regular)
         // Read the real code font: peek renders at 11.5pt, the diffs at 11pt.
         let codeFont = (textStorage?.length ?? 0) > 0
@@ -226,16 +254,24 @@ final class CodeTextView: NSTextView {
                 ?? NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
             : NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         let dim = NSColor.tertiaryLabelColor
-        let colW: CGFloat = 30, gap: CGFloat = 4, signW: CGFloat = 10
+        let colW = Gutter.columnWidth(maxLine: maxGutterLine), gap = Gutter.gap, signW = Gutter.signWidth
         let inset = textContainerInset.height
 
-        for (i, cell) in gutters.enumerated() where i < lineStarts.count {
+        // Clamp to the visible glyph range like drawBackground does: walking every
+        // line would be an O(file) layout sweep per frame while scrolling.
+        let vis = visibleRect.insetBy(dx: 0, dy: -40)
+        let gr = lm.glyphRange(forBoundingRect: vis, in: tc)
+        guard gr.length > 0 else { return }
+        let first = lineIndex(forChar: lm.characterIndexForGlyph(at: gr.location))
+        let last = lineIndex(forChar: lm.characterIndexForGlyph(at: NSMaxRange(gr) - 1))
+
+        for i in max(0, first)...max(0, last) where i < gutters.count && i < lineStarts.count {
+            let cell = gutters[i]
+            // The glyph at lineStarts[i] is the line's first fragment, so a wrapped
+            // line still gets exactly one set of numbers.
             let glyph = lm.glyphIndexForCharacter(at: lineStarts[i])
-            // Only the first fragment: a wrapped line keeps one set of numbers.
             var r = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
             r.origin.y += inset
-            guard r.intersects(NSRect(x: 0, y: visibleRect.minY - 40,
-                                      width: bounds.width, height: visibleRect.height + 80)) else { continue }
             // Derive the baseline from the fragment rather than the glyph: an empty
             // line has no glyph to carry the centring offset, so its number would
             // sit lower than every other row.
@@ -290,7 +326,7 @@ extension CodeTextView {
             out.append(attributedLine(line + "\n", spans: spans, font: mono, base: code, paragraph: para))
         }
         return CodeModel(string: out, starts: starts, lineBg: bg,
-                         gutters: cells, gutterWidth: CGFloat(gutterW) * 7 + 14)
+                         gutters: cells, gutterWidth: Gutter.width(columns: 1, maxLine: lines.count))
     }
 
     enum Side { case left, right }
@@ -334,7 +370,9 @@ extension CodeTextView {
             }
             out.append(line)
         }
-        return CodeModel(string: out, starts: starts, lineBg: bg, gutters: cells, gutterWidth: 40)
+        let maxN = cells.compactMap { $0.columns.compactMap(Int.init).max() }.max() ?? 0
+        return CodeModel(string: out, starts: starts, lineBg: bg, gutters: cells,
+                         gutterWidth: Gutter.width(columns: 1, maxLine: maxN))
     }
 }
 

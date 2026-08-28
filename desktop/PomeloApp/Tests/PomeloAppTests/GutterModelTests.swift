@@ -78,3 +78,45 @@ final class GutterModelTests: XCTestCase {
         XCTAssertEqual(model.gutterWidth, 0)
     }
 }
+
+final class GutterGeometryTests: XCTestCase {
+    // The reserved margin must fit the widest number the file actually uses;
+    // a five-digit file clipped when the column was a fixed 30pt.
+    func testColumnGrowsWithLineCount() {
+        let small = CodeTextView.Gutter.columnWidth(maxLine: 99)
+        let large = CodeTextView.Gutter.columnWidth(maxLine: 99999)
+        XCTAssertGreaterThan(large, small)
+        XCTAssertGreaterThan(large, 35, "5 digits at ~6.2pt each must fit")
+    }
+
+    func testShortFilesKeepAMinimumColumn() {
+        XCTAssertEqual(CodeTextView.Gutter.columnWidth(maxLine: 1),
+                       CodeTextView.Gutter.columnWidth(maxLine: 999),
+                       "1 and 3 digits share the minimum width")
+    }
+
+    // Two number columns plus a sign is wider than one bare column.
+    func testDiffReservesMoreThanPeek() {
+        let diff = CodeTextView.Gutter.width(columns: 2, maxLine: 500, sign: true)
+        let peek = CodeTextView.Gutter.width(columns: 1, maxLine: 500)
+        XCTAssertGreaterThan(diff, peek)
+    }
+
+    func testWidthScalesWithTheNumbersItHolds() {
+        let narrow = CodeTextView.Gutter.width(columns: 2, maxLine: 10, sign: true)
+        let wide = CodeTextView.Gutter.width(columns: 2, maxLine: 123456, sign: true)
+        XCTAssertGreaterThan(wide, narrow)
+    }
+
+    // A model built from a long file reserves more margin than a short one.
+    func testDiffModelReservesRoomForItsOwnNumbers() {
+        func file(_ lastLine: Int) -> DiffFile {
+            let json = #"{"path":"a.ts","status":"M","adds":0,"dels":0,"binary":false,"lines":[],"header_old_path":""}"#
+            var f = PomJSON.decode(DiffFile.self, from: Data(json.utf8))!
+            f.lines = [DiffLine(id: 1, kind: .context, oldN: lastLine, newN: lastLine, text: "x")]
+            return f
+        }
+        XCTAssertGreaterThan(CodeTextView.diff(file(98765)).gutterWidth,
+                             CodeTextView.diff(file(12)).gutterWidth)
+    }
+}
