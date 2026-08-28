@@ -3,13 +3,55 @@ import SwiftUI
 private struct SharedSvc: Decodable, Identifiable {
     var name = ""; var type = ""; var image = ""; var port = 0; var running = false; var url = ""
     var id: String { name }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        type = try c.decodeIfPresent(String.self, forKey: .type) ?? ""
+        image = try c.decodeIfPresent(String.self, forKey: .image) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+    }
+    enum K: String, CodingKey { case name, type, image, port, running, url }
 }
-private struct SharedResp: Decodable { var services: [SharedSvc] = [] }
+private struct SharedResp: Decodable {
+    var services: [SharedSvc] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        services = try c.decodeIfPresent([SharedSvc].self, forKey: .services) ?? []
+    }
+    enum K: String, CodingKey { case services }
+}
 
 private struct SharedInspect: Decodable {
-    struct Mount: Decodable, Hashable { var src = ""; var dst = "" }
-    struct Port: Decodable, Hashable { var host = ""; var container = ""; var proto = "" }
-    struct Label: Decodable, Hashable { var key = ""; var value = "" }
+    struct Mount: Decodable, Hashable {
+        var src = ""; var dst = ""
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            src = try c.decodeIfPresent(String.self, forKey: .src) ?? ""
+            dst = try c.decodeIfPresent(String.self, forKey: .dst) ?? ""
+        }
+        enum K: String, CodingKey { case src, dst }
+    }
+    struct Port: Decodable, Hashable {
+        var host = ""; var container = ""; var proto = ""
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+            container = try c.decodeIfPresent(String.self, forKey: .container) ?? ""
+            proto = try c.decodeIfPresent(String.self, forKey: .proto) ?? ""
+        }
+        enum K: String, CodingKey { case host, container, proto }
+    }
+    struct Label: Decodable, Hashable {
+        var key = ""; var value = ""
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+            value = try c.decodeIfPresent(String.self, forKey: .value) ?? ""
+        }
+        enum K: String, CodingKey { case key, value }
+    }
     var name = "", image = "", id = "", status = "", started_at = "", ip = "", url = ""
     var cpu = "", mem = "", net = "", disk = ""
     var port = 0
@@ -17,8 +59,41 @@ private struct SharedInspect: Decodable {
     var ports: [Port] = []
     var mounts: [Mount] = []
     var labels: [Label] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        image = try c.decodeIfPresent(String.self, forKey: .image) ?? ""
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        started_at = try c.decodeIfPresent(String.self, forKey: .started_at) ?? ""
+        ip = try c.decodeIfPresent(String.self, forKey: .ip) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        cpu = try c.decodeIfPresent(String.self, forKey: .cpu) ?? ""
+        mem = try c.decodeIfPresent(String.self, forKey: .mem) ?? ""
+        net = try c.decodeIfPresent(String.self, forKey: .net) ?? ""
+        disk = try c.decodeIfPresent(String.self, forKey: .disk) ?? ""
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 0
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        ports = try c.decodeIfPresent([Port].self, forKey: .ports) ?? []
+        mounts = try c.decodeIfPresent([Mount].self, forKey: .mounts) ?? []
+        labels = try c.decodeIfPresent([Label].self, forKey: .labels) ?? []
+    }
+    init(name: String = "", image: String = "", url: String = "", port: Int = 0, running: Bool = false) {
+        self.name = name; self.image = image; self.url = url; self.port = port; self.running = running
+    }
+    enum K: String, CodingKey {
+        case name, image, id, status, started_at, ip, url, cpu, mem, net, disk, port, running, ports, mounts, labels
+    }
 }
-private struct SharedLogs: Decodable { var running = false; var lines: [String] = [] }
+private struct SharedLogs: Decodable {
+    var running = false; var lines: [String] = []
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        lines = try c.decodeIfPresent([String].self, forKey: .lines) ?? []
+    }
+    enum K: String, CodingKey { case running, lines }
+}
 
 private enum DetailTab: String, CaseIterable { case info = "Info", stats = "Stats", logs = "Logs" }
 
@@ -64,7 +139,7 @@ struct SharedServicesView: View {
                     .font(.system(size: 11)).foregroundStyle(Theme.dim)
             }
             Spacer()
-            if busy { ProgressView().controlSize(.small) }
+            if busy { Spinner(size: 12) }
             Button { Task { await stack("up") } } label: { Text("Start all").font(.system(size: 12)) }
                 .buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(busy)
             Button { Task { await stack("stop") } } label: { Text("Stop all").font(.system(size: 12)) }
@@ -191,14 +266,11 @@ private struct DetailPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
-                ForEach(DetailTab.allCases, id: \.self) { t in
-                    Button { tab = t; if t == .stats { Task { await refreshStats() } } else if t == .logs { Task { await refresh() } } } label: {
-                        Text(t.rawValue).font(.system(size: 12, weight: tab == t ? .semibold : .regular))
-                            .foregroundStyle(tab == t ? Theme.fg : Theme.fgMuted)
-                            .padding(.horizontal, 12).padding(.vertical, 5)
-                            .background(tab == t ? Theme.sel : .clear, in: RoundedRectangle(cornerRadius: 6))
-                    }.buttonStyle(.plain)
-                }
+                SegmentedTabs(tabs: DetailTab.allCases, selection: $tab, label: \.rawValue, accent: false)
+                    .onChange(of: tab) {
+                        if tab == .stats { Task { await refreshStats() } }
+                        else if tab == .logs { Task { await refresh() } }
+                    }
                 Spacer()
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
@@ -261,10 +333,8 @@ private struct DetailPane: View {
         return "\(s/86400)d"
     }
 
-    private func card<C: View>(@ViewBuilder _ rows: () -> C) -> some View {
-        VStack(spacing: 0) { rows() }
-            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.borderSoft))
+    private func card<C: View>(@ViewBuilder _ rows: @escaping () -> C) -> some View {
+        Card(cornerRadius: 12) { VStack(spacing: 0) { rows() } }
     }
 
     private func tableSection(_ title: String, cols: [String], rows: [[String]]) -> some View {

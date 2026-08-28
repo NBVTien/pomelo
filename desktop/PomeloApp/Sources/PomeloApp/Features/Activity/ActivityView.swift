@@ -12,9 +12,41 @@ struct ProcInfo: Decodable, Identifiable, Equatable {
     var cpu = 0.0
     var ram_mb = 0.0
     var id: Int { pid }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        pid = try c.decodeIfPresent(Int.self, forKey: .pid) ?? 0
+        label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        ws_key = try c.decodeIfPresent(String.self, forKey: .ws_key) ?? ""
+        branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
+        repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
+        svc = try c.decodeIfPresent(String.self, forKey: .svc) ?? ""
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+        cpu = try c.decodeIfPresent(Double.self, forKey: .cpu) ?? 0.0
+        ram_mb = try c.decodeIfPresent(Double.self, forKey: .ram_mb) ?? 0.0
+    }
+    enum K: String, CodingKey { case pid, label, name, ws_key, branch, repo, svc, kind, cpu, ram_mb }
 }
-struct PsTotal: Decodable, Equatable { var cpu = 0.0; var ram_mb = 0.0; var procs = 0 }
-struct PsResponse: Decodable { var processes: [ProcInfo] = []; var total = PsTotal() }
+struct PsTotal: Decodable, Equatable {
+    var cpu = 0.0; var ram_mb = 0.0; var procs = 0
+    init() {}
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        cpu = try c.decodeIfPresent(Double.self, forKey: .cpu) ?? 0.0
+        ram_mb = try c.decodeIfPresent(Double.self, forKey: .ram_mb) ?? 0.0
+        procs = try c.decodeIfPresent(Int.self, forKey: .procs) ?? 0
+    }
+    enum K: String, CodingKey { case cpu, ram_mb, procs }
+}
+struct PsResponse: Decodable {
+    var processes: [ProcInfo] = []; var total = PsTotal()
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        processes = try c.decodeIfPresent([ProcInfo].self, forKey: .processes) ?? []
+        total = try c.decodeIfPresent(PsTotal.self, forKey: .total) ?? PsTotal()
+    }
+    enum K: String, CodingKey { case processes, total }
+}
 
 struct ActivityView: View {
     @EnvironmentObject var state: AppState
@@ -23,6 +55,7 @@ struct ActivityView: View {
     var onClose: () -> Void = {}
 
     @State private var procs: [ProcInfo] = []
+    @State private var loaded = false
     @State private var total = PsTotal()
     @State private var poll: Task<Void, Never>?
     @State private var cpuHist: [Double] = []
@@ -68,25 +101,22 @@ struct ActivityView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(scopeWsKey == nil ? "ACTIVITY · ALL" : "ACTIVITY").font(.system(size: 11, weight: .semibold)).kerning(0.6).foregroundStyle(Theme.muted)
+                SectionLabel(text: scopeWsKey == nil ? "ACTIVITY · ALL" : "ACTIVITY", size: 11)
                 Spacer()
                 Text(String(format: "CPU %.0f%%", scopedTotal.cpu)).font(Theme.mono(11)).foregroundStyle(cpuColor(scopedTotal.cpu))
                 Text(String(format: "· %.0f MB", scopedTotal.ram)).font(Theme.mono(11)).foregroundStyle(Theme.fgMuted)
                 Text("· \(shown.count)").font(Theme.mono(11)).foregroundStyle(Theme.dim)
-                Picker("", selection: $sortMode) {
-                    ForEach(SortMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 150).controlSize(.small).padding(.leading, 8)
-                Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 11)) }
-                    .buttonStyle(.plain).foregroundStyle(Theme.fgMuted).padding(.leading, 6)
+                SegmentedTabs(tabs: SortMode.allCases, selection: $sortMode, label: { $0.rawValue }, accent: false)
+                    .padding(.leading, 8)
+                IconButton("xmark", size: 11, action: onClose).padding(.leading, 6)
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
             Divider().overlay(Theme.borderSoft)
 
-            if shown.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "bolt.slash").font(.system(size: 26)).foregroundStyle(Theme.dim)
-                    Text("Nothing running").font(.system(size: 12.5)).foregroundStyle(Theme.fgMuted)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if shown.isEmpty && !loaded {
+                LoadingView(text: "loading processes…")
+            } else if shown.isEmpty {
+                EmptyStateView(icon: "bolt.slash", title: "Nothing running")
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -209,6 +239,7 @@ struct ActivityView: View {
     private func load() async {
         let d = await ActivityStore.ps()
         let fresh = PomJSON.decode(PsResponse.self, from: d)
+        loaded = true
         if let fresh {
             procs = fresh.processes; total = fresh.total
             let t = scopedTotal
@@ -236,18 +267,18 @@ struct MetricCard: View {
     var maxHint: Double?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.fgMuted)
-                Spacer()
-                Text(value).font(Theme.mono(12.5, .semibold)).foregroundStyle(color)
+        Card(cornerRadius: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.fgMuted)
+                    Spacer()
+                    Text(value).font(Theme.mono(12.5, .semibold)).foregroundStyle(color)
+                }
+                Sparkline(samples: samples, color: color, maxHint: maxHint).frame(height: 36)
             }
-            Sparkline(samples: samples, color: color, maxHint: maxHint).frame(height: 36)
+            .padding(10)
+            .frame(maxWidth: .infinity)
         }
-        .padding(10)
-        .frame(maxWidth: .infinity)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.borderSoft))
     }
 }
 

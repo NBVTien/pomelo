@@ -6,6 +6,35 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-28
+
+### Added
+- SQL editor: run just the statement under the cursor (or the current selection) with Cmd-Return; Cmd-Shift-Return runs the whole buffer. (#60)
+
+### Changed
+- Smarter SQL autocomplete: fuzzy ranking so "users" finds "partner_users", table/column lists that follow the clause (FROM, SELECT, WHERE, `table.`), a manual trigger (Esc) that lists everything, and a popup that tracks the caret and reappears after you delete and retype. (#60)
+- The SQL editor and Database navigator honor the active theme (including sepia) and recolor immediately when you switch themes. (#60)
+
+### Fixed
+- Pull request Files and Commits reflect the pushed PR even when the local checkout is behind, by diffing the pushed refs and refreshing them in the background. (#60)
+- Global keyboard shortcuts work while a text field or the SQL editor is focused, and the SQL editor's line-number gutter no longer overlaps the results grid. (#60)
+- App data still decodes when the backend omits an optional field, and repeated polling no longer re-renders the whole window on every tick. (#60)
+
+## [0.3.2] - 2026-08-28
+
+### Added
+- Database navigator rebuilt on a native outline view: smooth row reuse for large schemas, correct nested indentation (server > database > tables), native disclosure, and drag-to-reorder that keeps working even with tables expanded. (#59)
+
+### Changed
+- The main workspace's "keep fresh" status now shows the real sync outcome and how fresh it is ("synced 2m ago", "N updated", or a failure) instead of a bare countdown; the next-run timer moves into a per-repo popover. Each repo is pulled onto its own default branch, and a pull runs immediately on launch. (#59)
+- Consistent loading vs empty states across the PR tabs, Activity, Secrets, and diffs, plus a shared UI kit (spinner, cards, pills, section headers) drawn without native controls for a uniform look. (#59)
+
+### Fixed
+- Pull request Files and Commits now match the PR even when the local worktree is behind, by diffing the pushed PR refs. (#59)
+- The PR conversation loads reliably (its timeline is now assembled by the core), and PR and Jira details are cached to disk so reopening a workspace is instant. (#59)
+- Global keyboard shortcuts (settings, shared services, and friends) fire even while a text field or the SQL editor is focused. (#59)
+- Crash log output wraps instead of scrolling sideways. (#59)
+
 ## [0.3.1] - 2026-08-28
 
 ### Fixed
