@@ -6,6 +6,20 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-28
+
+### Added
+- SQL editor: run just the statement under the cursor (or the current selection) with Cmd-Return; Cmd-Shift-Return runs the whole buffer. (#60)
+
+### Changed
+- Smarter SQL autocomplete: fuzzy ranking so "users" finds "partner_users", table/column lists that follow the clause (FROM, SELECT, WHERE, `table.`), a manual trigger (Esc) that lists everything, and a popup that tracks the caret and reappears after you delete and retype. (#60)
+- The SQL editor and Database navigator honor the active theme (including sepia) and recolor immediately when you switch themes. (#60)
+
+### Fixed
+- Pull request Files and Commits reflect the pushed PR even when the local checkout is behind, by diffing the pushed refs and refreshing them in the background. (#60)
+- Global keyboard shortcuts work while a text field or the SQL editor is focused, and the SQL editor's line-number gutter no longer overlaps the results grid. (#60)
+- App data still decodes when the backend omits an optional field, and repeated polling no longer re-renders the whole window on every tick. (#60)
+
 ## [0.3.2] - 2026-08-28
 
 ### Added
