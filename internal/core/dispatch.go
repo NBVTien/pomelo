@@ -329,6 +329,12 @@ func (s *Server) Fetch(domain string, params json.RawMessage) []byte {
 			return nil
 		}
 		return diffparse.ParseJSON(out)
+	case "pr_commit_diff":
+		out, err := s.PRCommitDiff(branch, repo, pStr(params, "sha"), isMain)
+		if err != nil {
+			return nil
+		}
+		return diffparse.ParseJSON(out)
 	case "review_get":
 		return s.ReviewGet(branch, isMain)
 	case "review_threads":

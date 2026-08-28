@@ -214,3 +214,23 @@ private struct OptionalTooltip: ViewModifier {
         if let t = text { content.tooltip(t) } else { content }
     }
 }
+
+/// A "?" badge that explains a setting on hover. Deliberately inert on click —
+/// it is an affordance for the explanation, not a control.
+///
+/// Uses the system `help` tooltip, not the app's: TooltipOverlay is mounted once
+/// in RootView, so the in-app bubble would render in the main window while this
+/// badge lives in a separate one.
+struct HelpHint: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Image(systemName: "questionmark.circle.fill")
+            .font(.system(size: 11.5))
+            .foregroundStyle(Theme.dim)
+            .contentShape(Circle())
+            .help(text)
+            .accessibilityLabel(text)
+    }
+}

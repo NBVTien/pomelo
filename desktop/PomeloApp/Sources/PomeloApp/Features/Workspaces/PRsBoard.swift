@@ -514,6 +514,9 @@ struct PRDetail: View {
     @State private var splitDiff = false
     @AppStorage("prs.filesTreeVisible") private var filesTreeVisible = true
     @State private var commits: [PRCommit]?
+    @State private var selCommit: String?
+    @State private var commitFiles: [DiffFile]?
+    @State private var selCommitFile: String?
     @State private var timelineItems: [PRTimelineItem] = []
     @State private var timelineLoaded = false
     @State private var loadingDetail = true
@@ -584,13 +587,18 @@ struct PRDetail: View {
 
     @ViewBuilder private var commitsTab: some View {
         Group {
-            if let commits {
+            if let sel = selCommit, let c = commits?.first(where: { $0.id == sel }) {
+                commitDiffView(c)
+            } else if let commits {
                 if commits.isEmpty { EmptyStateView(icon: "circle.dashed", title: "No commits since base") }
                 else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(Array(commits.enumerated()), id: \.element.id) { i, c in
-                                commitRow(c, isFirst: i == 0, isLast: i == commits.count - 1)
+                                Button { selCommit = c.id } label: {
+                                    commitRow(c, isFirst: i == 0, isLast: i == commits.count - 1)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }.padding(.vertical, 8).readingColumn()
                     }
@@ -598,6 +606,44 @@ struct PRDetail: View {
             } else { LoadingView(text: "loading commits…") }
         }
         .task(id: item.repo) { await loadCommits() }
+        .task(id: selCommit) { await loadCommitDiff() }
+    }
+
+    private func commitDiffView(_ c: PRCommit) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Button { selCommit = nil } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
+                        Text("Commits").font(.system(size: 11.5))
+                    }.foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain).keyboardShortcut(.escape, modifiers: [])
+                Text(c.hash).font(Theme.mono(10.5)).foregroundStyle(Theme.accent)
+                Text(c.subject).font(.system(size: 12)).foregroundStyle(Theme.fg)
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 0)
+                if !c.author.isEmpty { Text(c.author).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted) }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Theme.bgSoft)
+            Divider().overlay(Theme.borderSoft)
+            DiffFilesView(files: commitFiles, selFile: $selCommitFile, filesTreeVisible: $filesTreeVisible,
+                          splitDiff: $splitDiff, loadingLabel: "loading commit diff…",
+                          emptyLabel: "This commit changed nothing")
+        }
+    }
+
+    private func loadCommitDiff() async {
+        guard let sha = selCommit else { commitFiles = nil; return }
+        commitFiles = nil
+        let repo = item.repo
+        let files = await Task.detached(priority: .userInitiated) { () -> [DiffFile] in
+            PomJSON.decode([DiffFile].self, from: PRStore.commitDiff(branch: branch, repo: repo, sha: sha, isMain: isMain)) ?? []
+        }.value
+        guard selCommit == sha else { return }
+        commitFiles = files
+        selCommitFile = files.first?.path
     }
 
     private func commitRow(_ c: PRCommit, isFirst: Bool, isLast: Bool) -> some View {

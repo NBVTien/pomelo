@@ -17,6 +17,29 @@ enum ThemeMode: String, CaseIterable {
     var isDark: Bool { self != .light }
 }
 
+/// How read-only code views handle a line wider than the pane. A preference
+/// because it is a genuine split: wrapping keeps everything on screen, scrolling
+/// keeps the split diff's two columns aligned line-for-line.
+enum CodeWrapMode: String, CaseIterable {
+    case wrap, scroll
+    var wraps: Bool { self == .wrap }
+    var label: String { self == .wrap ? "Wrap" : "Scroll" }
+}
+
+// Read by AppKit render code, which has no view context to inject through.
+var activeCodeWrapMode: CodeWrapMode =
+    CodeWrapMode(rawValue: UserDefaults.standard.string(forKey: "codeWrapMode") ?? "scroll") ?? .scroll
+
+final class CodeDisplayManager: ObservableObject {
+    static let shared = CodeDisplayManager()
+    @Published var wrapMode: CodeWrapMode = activeCodeWrapMode {
+        didSet {
+            activeCodeWrapMode = wrapMode
+            UserDefaults.standard.set(wrapMode.rawValue, forKey: "codeWrapMode")
+        }
+    }
+}
+
 struct Palette {
     let bg, bgSoft, surface, panel3: Color
     let borderSoft, border, borderHi: Color

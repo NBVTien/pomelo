@@ -35,6 +35,9 @@ func (s *Server) PRCommits(branch, repo, base string, isMain bool) map[string]an
 func (s *Server) PRDiff(branch, repo string, isMain bool) ([]byte, error) {
 	return s.pr.Diff(branch, repo, isMain)
 }
+func (s *Server) PRCommitDiff(branch, repo, sha string, isMain bool) ([]byte, error) {
+	return s.pr.CommitDiff(branch, repo, sha, isMain)
+}
 func (s *Server) WorkspaceLocalChanges(branch string, isMain bool) []byte {
 	return s.pr.WorkspaceLocalChanges(branch, isMain)
 }

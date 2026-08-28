@@ -205,6 +205,7 @@ final class PomCore: @unchecked Sendable {
     func reviewThreadReply(branch: String, isMain: Bool, id: String, body: String) -> Data { command(domain: "review", action: "thread_reply", params: jp(["branch": branch, "is_main": isMain, "id": id, "body": body])) }
     func reviewThreadResolve(branch: String, isMain: Bool, id: String, resolved: Bool) -> Data { command(domain: "review", action: "thread_resolve", params: jp(["branch": branch, "is_main": isMain, "id": id, "resolved": resolved])) }
     func localChangesData(branch: String, isMain: Bool) -> Data { fetch(domain: "local_changes", params: jp(["branch": branch, "is_main": isMain])) }
+    func prCommitDiffData(branch: String, repo: String, sha: String, isMain: Bool) -> Data { fetch(domain: "pr_commit_diff", params: jp(["branch": branch, "repo": repo, "sha": sha, "is_main": isMain])) }
     func localDiffData(branch: String, repo: String, isMain: Bool) -> Data { fetch(domain: "local_diff", params: jp(["branch": branch, "repo": repo, "is_main": isMain]))
     }
     func jiraTest(site: String, email: String, token: String) -> Data { command(domain: "jira", action: "test", params: jp(["site": site, "email": email, "token": token])) }

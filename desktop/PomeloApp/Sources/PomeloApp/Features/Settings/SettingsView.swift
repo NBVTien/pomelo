@@ -108,6 +108,7 @@ struct SettingsView: View {
 private struct GeneralSettings: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var theme: ThemeManager
+    @ObservedObject private var codeDisplay = CodeDisplayManager.shared
     @State private var editors: [String] = []
     @State private var version = ""
     @State private var releasesURL = "https://github.com/pomelohq/pomelo/releases/latest"
@@ -125,12 +126,23 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
-            Section("Appearance") {
+            Section {
                 Picker("Theme", selection: $theme.mode) {
                     ForEach(ThemeMode.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
                 }
                 .pickerStyle(.segmented)
-            }
+                LabeledContent {
+                    Picker("", selection: $codeDisplay.wrapMode) {
+                        ForEach(CodeWrapMode.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden()
+                } label: {
+                    HStack(spacing: 5) {
+                        Text("Read-only long lines of code")
+                        HelpHint("Applies to diffs and file previews — anywhere code is shown but not edited. Wrap keeps a long line on screen by breaking it across rows; Scroll keeps it on one row, which is what holds the side-by-side diff aligned line-for-line.")
+                    }
+                }
+            } header: { Text("Appearance") }
             Section {
                 Picker("Open with (⌘E)", selection: $state.editorPref) {
                     Text("Auto-detect").tag("")

@@ -166,6 +166,7 @@ struct DiffFileList: View {
 
 struct DiffFilesView: View {
     @EnvironmentObject var theme: ThemeManager
+    @ObservedObject private var codeDisplay = CodeDisplayManager.shared
     let files: [DiffFile]?
     @Binding var selFile: String?
     @Binding var filesTreeVisible: Bool
@@ -193,9 +194,9 @@ struct DiffFilesView: View {
                                 } else if f.binary {
                                     centered("Binary file — no textual diff")
                                 } else if splitDiff {
-                                    CodeSplitView(file: f, isDark: theme.mode.isDark)
+                                    CodeSplitView(file: f, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
                                 } else {
-                                    CodeDiffView(file: f, isDark: theme.mode.isDark)
+                                    CodeDiffView(file: f, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
                                 }
                             } else {
                                 centered("Select a file")
@@ -341,6 +342,7 @@ import AppKit
 struct CodeDiffView: NSViewRepresentable {
     let file: DiffFile
     var isDark: Bool
+    var wrapMode: CodeWrapMode = activeCodeWrapMode
 
     func makeCoordinator() -> Coord { Coord() }
 
@@ -356,9 +358,11 @@ struct CodeDiffView: NSViewRepresentable {
         scroll.appearance = ap
         guard let tv = context.coordinator.textView else { return }
         tv.appearance = ap
+        tv.configureReadOnly(inset: NSSize(width: 0, height: 6), wraps: wrapMode.wraps)
+        scroll.hasHorizontalScroller = !wrapMode.wraps
         // Theme-derived colours are baked into the string at build time, so a theme
         // switch must rebuild — hence isDark in the key.
-        let key = "\(file.path):\(isDark)"
+        let key = "\(file.path):\(isDark):\(wrapMode.rawValue)"
         if context.coordinator.key == key { return }
         context.coordinator.key = key
         tv.apply(CodeTextView.diff(file))
@@ -374,29 +378,28 @@ extension CodeTextView {
         let dim = NSColor.tertiaryLabelColor, code = NSColor.labelColor
         let addC = NSColor.systemGreen, delC = NSColor.systemRed, hunkC = NSColor.systemPurple
         let addBg = opaque(.systemGreen, 0.16), delBg = opaque(.systemRed, 0.16), hunkBg = opaque(.systemPurple, 0.10)
-        func num(_ n: Int?) -> String {
-            let s = n.map(String.init) ?? ""
-            return String(repeating: " ", count: max(0, 5 - s.count)) + s
-        }
         let out = NSMutableAttributedString()
-        var starts: [Int] = [], bg: [NSColor?] = []
+        var starts: [Int] = [], bg: [NSColor?] = [], cells: [GutterCell] = []
         func append(_ s: String, _ color: NSColor) {
-            out.append(NSAttributedString(string: s, attributes: [.font: mono, .foregroundColor: color, .paragraphStyle: para]))
+            out.append(NSAttributedString(string: s, attributes: CodeTextView.rowAttributes(font: mono, color: color, lineHeight: para.maximumLineHeight)))
         }
         for l in file.lines {
             starts.append(out.length)
             switch l.kind {
             case .hunk:
                 bg.append(hunkBg)
+                cells.append(GutterCell())
                 append(l.text + "\n", hunkC)
             default:
                 bg.append(l.kind == .add ? addBg : l.kind == .del ? delBg : nil)
-                append(num(l.oldN) + " " + num(l.newN) + " ", dim)
-                let sign = l.kind == .add ? "+" : l.kind == .del ? "-" : " "
-                append(sign + " ", l.kind == .add ? addC : l.kind == .del ? delC : dim)
+                cells.append(GutterCell(columns: [l.oldN.map(String.init) ?? "", l.newN.map(String.init) ?? ""],
+                                        sign: l.kind == .add ? "+" : l.kind == .del ? "-" : "",
+                                        signColor: l.kind == .add ? addC : l.kind == .del ? delC : dim))
                 out.append(attributedLine(l.text + "\n", spans: Syntax.spans(l.text), font: mono, base: code, paragraph: para))
             }
         }
-        return CodeModel(string: out, starts: starts, lineBg: bg)
+        let maxN = cells.compactMap { $0.columns.compactMap(Int.init).max() }.max() ?? 0
+        return CodeModel(string: out, starts: starts, lineBg: bg, gutters: cells,
+                         gutterWidth: CodeTextView.Gutter.width(columns: 2, maxLine: maxN, sign: true))
     }
 }
