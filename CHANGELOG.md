@@ -6,6 +6,21 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-29
+
+### Added
+- Split diff: a side-by-side view that bridges each change with a curved connector ribbon and keeps matching lines anchored while you scroll; choose Unified or Split as the default in Settings > Appearance. (#70)
+- Open the agent beside a function pane (Cmd-I) in a resizable split that persists per workspace, with a top-bar status pill that lists active agents and jumps to one. (#69)
+- Attachments in Jira and PR views open inline images in a viewer. (#67)
+
+### Changed
+- The services home is a reorderable kanban board, the sidebar reveals on hover when collapsed, and the command palette shows each workspace's agent state and PR/ticket status. (#69)
+- Jira comments are styled like Jira, with a resizable comments column. (#68)
+- Split diff tints each line by change kind with word-level highlights and syncs horizontal scroll across both panes. (#70)
+
+### Fixed
+- PRs, Jira status, and severity dots appear from cache on launch instead of a multi-second "loading" spinner. (#71)
+
 ## [0.3.6] - 2026-08-29
 
 ### Added
