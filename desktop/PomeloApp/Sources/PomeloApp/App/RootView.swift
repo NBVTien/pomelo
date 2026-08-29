@@ -5,6 +5,8 @@ struct RootView: View {
     @EnvironmentObject var theme: ThemeManager
     @Environment(\.openWindow) private var openWindow
     @State private var prPeekHeight: CGFloat = 0
+    @State private var sidebarPeek = false
+    @State private var peekWork: DispatchWorkItem?
 
     var body: some View {
         _ = theme.mode
@@ -35,7 +37,7 @@ struct RootView: View {
             .overlay(TooltipOverlay().zIndex(2000))
             .animation(.easeOut(duration: 0.14), value: state.prPeek)
             .background(
-                Button("") { StreamManager.shared.clearActive() }   // ⌘K clears the active terminal
+                Button("") { StreamManager.shared.clearActive() }
                     .keyboardShortcut("k", modifiers: .command).hidden()
             )
             .overlay {
@@ -112,10 +114,7 @@ struct RootView: View {
                 Divider().overlay(Theme.borderSoft)
                 HStack(spacing: 0) {
                     if !state.sidebarCollapsed {
-                        WorkspaceSidebar().frame(width: 270)
-                            .zIndex(1)
-                            .transition(.move(edge: .leading))
-                        Divider().overlay(Theme.borderSoft)
+                        Color.clear.frame(width: 271)
                     }
                     Group {
                         if let err = state.configError {
@@ -135,6 +134,8 @@ struct RootView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .overlay(alignment: .topLeading) { sidebarSlideLayer }
+                .overlay(alignment: .topLeading) { sidebarPeekTrigger }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .allowsHitTesting(!state.showSessions)
@@ -195,6 +196,42 @@ struct RootView: View {
                 Button("Choose another…") { state.openExistingSession() }
                 Button("Cancel", role: .cancel) {}
             } message: { Text(state.openError ?? "") }
+        }
+    }
+
+    private var sidebarShown: Bool { !state.sidebarCollapsed || sidebarPeek }
+
+    @ViewBuilder private var sidebarSlideLayer: some View {
+        HStack(spacing: 0) {
+            WorkspaceSidebar().frame(width: 270)
+            Divider().overlay(Theme.borderSoft)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.bg)
+        .shadow(color: (state.sidebarCollapsed && sidebarPeek) ? .black.opacity(0.35) : .clear, radius: 12, x: 4)
+        .offset(x: sidebarShown ? 0 : -271)
+        .allowsHitTesting(sidebarShown)
+        .zIndex(2)
+        .animation(.easeInOut(duration: 0.18), value: state.sidebarCollapsed)
+        .animation(.easeInOut(duration: 0.16), value: sidebarPeek)
+        .onHover { hovering in
+            guard state.sidebarCollapsed else { return }
+            peekWork?.cancel()
+            if !hovering { sidebarPeek = false }
+        }
+    }
+
+    @ViewBuilder private var sidebarPeekTrigger: some View {
+        if state.sidebarCollapsed {
+            Color.clear.frame(width: 8).frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    peekWork?.cancel()
+                    guard hovering else { return }
+                    let w = DispatchWorkItem { sidebarPeek = true }
+                    peekWork = w
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: w)
+                }
         }
     }
 }

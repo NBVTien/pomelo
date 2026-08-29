@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ServicesBoard: View {
     @EnvironmentObject var state: AppState
@@ -9,9 +10,7 @@ struct ServicesBoard: View {
     var onPrepareMain: () -> Void = {}
     @StateObject private var peek = PeekStore()
     @State private var investigating = false
-    @State private var dragId: String?
-    @State private var dragTranslation: CGFloat = 0
-    @State private var widths: [String: CGFloat] = [:]
+    @State private var dragging: String?
     private let colSpacing: CGFloat = 16
 
     private func createInvestigate() {
@@ -33,29 +32,7 @@ struct ServicesBoard: View {
     var body: some View {
         VStack(spacing: 0) {
             if workspace.isMain { goldenSourceBar }
-            ScrollView(.horizontal) {
-                let names = state.orderedRepos(workspace.repos).map(\.name)
-                HStack(alignment: .top, spacing: colSpacing) {
-                    ForEach(Array(state.orderedRepos(workspace.repos).enumerated()), id: \.element.id) { idx, repo in
-                        HStack(alignment: .top, spacing: 8) {
-                            grip(repo: repo.name, names: names)
-                            RepoColumn(repo: repo, branch: workspace.branch, isMain: workspace.isMain, openPane: openPane, openTerminal: openTerminal)
-                        }
-                        .background(widthReader(id: repo.name))
-                        .offset(x: colOffset(idx, names: names))
-                        .scaleEffect(dragId == repo.name ? 1.02 : 1, anchor: .top)
-                        .shadow(color: dragId == repo.name ? .black.opacity(0.25) : .clear,
-                                radius: dragId == repo.name ? 12 : 0, y: 6)
-                        .opacity(dragId != nil && dragId != repo.name ? 0.8 : 1)
-                        .zIndex(dragId == repo.name ? 2 : 0)
-                        .animation(dragId == repo.name ? nil : .spring(response: 0.28, dampingFraction: 0.82), value: colOffset(idx, names: names))
-                        .animation(.spring(response: 0.24, dampingFraction: 0.8), value: dragId)
-                    }
-                }
-                .padding(.horizontal, 14).padding(.vertical, 16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .onPreferenceChange(RepoWidthKey.self) { widths = $0 }
-            }
+            gridBoard
         }
         .background(Theme.bg)
         .environmentObject(peek)
@@ -64,59 +41,30 @@ struct ServicesBoard: View {
         .onDisappear { peek.stop() }
     }
 
-    private func grip(repo: String, names: [String]) -> some View {
-        Image(systemName: "line.3.horizontal")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(dragId == repo ? Theme.accent : Theme.dim)
-            .frame(width: 16)
-            .padding(.top, 6)
-            .contentShape(Rectangle())
-            .help("Drag to reorder")
-            .gesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .global)
-                    .onChanged { v in
-                        if dragId == nil { dragId = repo }
-                        dragTranslation = v.translation.width
-                    }
-                    .onEnded { _ in
-                        state.moveRepo(repo, toIndex: targetIndex(names: names), in: names)
-                        dragId = nil; dragTranslation = 0
-                    }
-            )
-    }
-
-    private func widthReader(id: String) -> some View {
-        GeometryReader { g in Color.clear.preference(key: RepoWidthKey.self, value: [id: g.size.width]) }
-    }
-
-    private func midXs(_ names: [String]) -> [CGFloat] {
-        var x: CGFloat = 0
-        return names.map { name in
-            let w = widths[name] ?? 384
-            defer { x += w + colSpacing }
-            return x + w / 2
+    private var gridBoard: some View {
+        let repos = state.orderedRepos(workspace.repos)
+        let names = repos.map(\.name)
+        return ScrollView(.vertical) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 360, maximum: 560), spacing: colSpacing, alignment: .top)],
+                      alignment: .center, spacing: 16) {
+                ForEach(repos, id: \.id) { repo in
+                    RepoColumn(repo: repo, branch: workspace.branch, isMain: workspace.isMain, openPane: openPane, openTerminal: openTerminal)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .opacity(dragging == repo.name ? 0.35 : 1)
+                        .onDrag {
+                            dragging = repo.name
+                            return NSItemProvider(object: repo.name as NSString)
+                        }
+                        .onDrop(of: [UTType.text], delegate: RepoReorderDelegate(target: repo.name, names: names, dragging: $dragging) {
+                            state.moveRepo($0, toIndex: $1, in: $2)
+                        })
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .animation(.spring(response: 0.3, dampingFraction: 0.85), value: names)
         }
-    }
-
-    private func targetIndex(names: [String]) -> Int {
-        guard let dragId, let from = names.firstIndex(of: dragId) else { return 0 }
-        let mids = midXs(names)
-        guard from < mids.count else { return from }
-        let mid = mids[from] + dragTranslation
-        var t = from
-        while t > 0 && mid < mids[t - 1] { t -= 1 }
-        while t < names.count - 1 && mid > mids[t + 1] { t += 1 }
-        return t
-    }
-
-    private func colOffset(_ idx: Int, names: [String]) -> CGFloat {
-        guard let dragId, let from = names.firstIndex(of: dragId) else { return 0 }
-        if idx == from { return dragTranslation }
-        let dw = (widths[dragId] ?? 384) + colSpacing
-        let to = targetIndex(names: names)
-        if from < to, idx > from, idx <= to { return -dw }
-        if from > to, idx >= to, idx < from { return dw }
-        return 0
+        .onDrop(of: [UTType.text], isTargeted: nil) { _ in dragging = nil; return true }
     }
 
     private var goldenSourceBar: some View {
@@ -135,7 +83,6 @@ struct ServicesBoard: View {
             }
             .buttonStyle(.plain).disabled(investigating)
             .help("Create a throwaway investigate-<date> workspace (all main repos) to reproduce a bug in isolation — no ticket/branch to name.")
-            // Prepare main hidden until the flow is finished.
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .background(Theme.bgSoft)
@@ -172,6 +119,7 @@ struct RepoColumn: View {
                     IconButton("stop", tip: "Stop all") { runAll("stop") }
                 }
                 IconButton("terminal", tip: "Open terminal in \(repo.alias ?? repo.name)") { openRepoTerminal() }
+                if services.contains(where: { ($0.port ?? 0) > 0 }) { portMenu }
                 if let scs = repo.shortcuts, !scs.isEmpty { shortcutMenu(scs) }
                 repoMenu
             }
@@ -189,21 +137,28 @@ struct RepoColumn: View {
     }
 
     private func shortcutMenu(_ scs: [Shortcut]) -> some View {
-        Menu {
+        PopoverMenu(systemImage: "bolt") { close in
             ForEach(scs) { sc in
-                Button {
-                    runShortcut(sc)
-                } label: {
-                    Text(sc.desc.isEmpty ? sc.cmd : sc.desc)
-                    if !sc.desc.isEmpty { Text(sc.cmd) }
+                PopItem(sc.desc.isEmpty ? sc.cmd : sc.desc, icon: "bolt") { runShortcut(sc); close() }
+            }
+        }
+        .help("Shortcuts — \(scs.count) command\(scs.count == 1 ? "" : "s")")
+    }
+
+    private var portMenu: some View {
+        PopoverMenu(systemImage: "number") { close in
+            ForEach(services.filter { ($0.port ?? 0) > 0 }) { svc in
+                PopItem("\(svc.name)   :\(svc.port ?? 0)", icon: "doc.on.doc") {
+                    copyPort("127.0.0.1:\(svc.port ?? 0)"); close()
                 }
             }
-        } label: {
-            Image(systemName: "bolt").font(.system(size: 12)).foregroundStyle(Theme.dim)
-                .frame(width: 24, height: 22)
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help("Shortcuts — \(scs.count) command\(scs.count == 1 ? "" : "s")")
+        .help("Copy service port")
+    }
+
+    private func copyPort(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
     }
 
     private var repoMenu: some View {
@@ -260,15 +215,6 @@ struct RepoColumn: View {
     }
 }
 
-struct RepoWidthKey: PreferenceKey {
-    static let defaultValue: [String: CGFloat] = [:]
-    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
-        value.merge(nextValue()) { _, n in n }
-    }
-}
-
-
-
 struct SvcCard: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var peek: PeekStore
@@ -310,6 +256,7 @@ struct SvcCard: View {
                     .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(service.running ? Theme.ok.opacity(0.3) : Theme.borderSoft))
         .animation(.easeInOut(duration: 0.22), value: service.running)
@@ -320,7 +267,7 @@ struct SvcCard: View {
         HStack(spacing: 9) {
             Circle().fill(service.running ? Theme.ok : (service.crashed == true ? Theme.danger : Theme.dim)).frame(width: 7, height: 7).fixedSize()
             Text(service.name).font(Theme.mono(13, .medium)).foregroundStyle(Theme.fg)
-                .lineLimit(1).truncationMode(.tail).layoutPriority(-1)
+                .lineLimit(1).truncationMode(.tail).layoutPriority(1)
             statusLabel.fixedSize()
             Spacer(minLength: 6)
             if let modes = service.modes, modes.count > 0 {
@@ -342,7 +289,7 @@ struct SvcCard: View {
         if isBusy {
             EmptyView()
         } else if service.running {
-            if let p = service.port, p > 0 { Text(":\(p)").font(Theme.mono(11)).foregroundStyle(Theme.dim) }
+            EmptyView()
         } else {
             Text(crashMsg != nil ? "crashed" : "stopped")
                 .font(Theme.mono(9.5)).textCase(.uppercase).kerning(0.5)
@@ -583,4 +530,18 @@ struct SvcPeekView: View {
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(Theme.bg)
     }
+}
+
+struct RepoReorderDelegate: DropDelegate {
+    let target: String
+    let names: [String]
+    @Binding var dragging: String?
+    let move: (String, Int, [String]) -> Void
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func dropEntered(info: DropInfo) {
+        guard let d = dragging, d != target, let to = names.firstIndex(of: target) else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { move(d, to, names) }
+    }
+    func performDrop(info: DropInfo) -> Bool { dragging = nil; return true }
 }
