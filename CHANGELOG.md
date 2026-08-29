@@ -6,6 +6,12 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-30
+
+### Fixed
+- Keep main fresh no longer fails when two Pomelo instances run against the same project: the golden-source refresh now serializes across processes instead of racing git and leaving a stale lock. (#73)
+- A failed per-repo pull shows its git error inline in the sync popover, so it explains itself instead of just reading "failed". (#73)
+
 ## [0.4.1] - 2026-08-30
 
 ### Added
