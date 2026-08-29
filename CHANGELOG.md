@@ -6,6 +6,17 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-30
+
+### Added
+- Review Model tab: a data-model (ER) diagram of the entities a change touches — boxes with primary/foreign-key fields, relationship edges, and added/changed highlighting; click an entity to peek its definition. (#72)
+
+### Changed
+- The review narrative is selectable as one document (drag across the whole thing, not one paragraph at a time) and can link a phrase straight to the Flow or Model diagram instead of restating it. (#72)
+
+### Fixed
+- An open review updates when it is regenerated, and switching between Narrative, Flow, and Model no longer reloads the step timeline. (#72)
+
 ## [0.4.0] - 2026-08-29
 
 ### Added
