@@ -6,6 +6,11 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-30
+
+### Fixed
+- A repo with no runnable services (for example an infrastructure or config-only repo) can now be added to a workspace instead of failing with "no repos selected" — it gets a worktree and stays in sync, just with nothing to run. (#74)
+
 ## [0.4.2] - 2026-08-30
 
 ### Fixed
