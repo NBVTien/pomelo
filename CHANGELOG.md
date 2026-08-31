@@ -4,6 +4,18 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-09-01
+
+### Changed
+- The agent terminal mirror reconnects seamlessly. The PTY holder now frames its scrollback snapshot and streams a byte offset, so a reattaching client resumes from where it left off instead of replaying the whole buffer over its live screen. A client that is caught up replays nothing. (#78)
+
+### Fixed
+- iOS terminal no longer garbles after the app is backgrounded or reloads when switching tabs. A background assertion keeps a brief app switch connected, and a real reconnect resets the buffer before the replay. (#78)
+- iOS home list refreshes every paired Mac concurrently and no longer sticks on "connecting" while one is slow or offline. (#78)
+
+### Added
+- iOS pairing scanner gets continuous autofocus with an ultra-wide fallback for close QR codes, tap-to-focus, and a Camera-style pinch-zoom bar. The agent terminal supports swipe-to-scroll for full-screen agents. (#78)
+
 ## [0.5.0] - 2026-08-31
 
 ### Added
