@@ -4,10 +4,16 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-31
+
+### Added
+- Remote control: pair a phone over LAN or Tailscale and drive Pomelo from an iOS companion app - dashboard, live agent terminal, PR and Jira views, create and rename workspaces. Trust is a pinned self-signed certificate over a bearer-authenticated, allowlisted control API (no browser, no HTTP port). (#77)
+- iOS app: dark, light, and sepia themes, a home-screen widget, and a Live Activity / Dynamic Island that shows active agent status and Claude usage. (#77)
+- Git panel: a Git tab in the workspace pane with file status and stage, commit, and push actions. (#77)
 
 ### Fixed
-- Service URLs route again after Pomelo restarts while an agent window is still open. Each `pom mcp` server was claiming the dev-proxy and webhook-relay ports, so an MCP process that outlived the app kept them and every workspace service answered "no dev-proxy route" — the MCP server no longer starts those listeners. The app also logs when the dev-proxy port is already taken instead of failing silently.
+- Service URLs route again after Pomelo restarts while an agent window is still open. Each `pom mcp` server was claiming the dev-proxy and webhook-relay ports, so an MCP process that outlived the app kept them and every workspace service answered "no dev-proxy route" - the MCP server no longer starts those listeners. The app also logs when the dev-proxy port is already taken instead of failing silently. (#76)
+- The PRs pane stays usable at narrow split widths. (#75)
 
 ## [0.4.3] - 2026-08-30
 
