@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AgentTerminal: View {
     @Environment(AppState.self) var state
+    @EnvironmentObject var theme: ThemeManager
     let branch: String
     let isMain: Bool
     let wsKey: String
@@ -10,6 +11,7 @@ struct AgentTerminal: View {
     @StateObject private var vm = AgentTerminalViewModel()
     @State private var holder: String?
     @AppStorage("claudeFontSize") private var fontSize: Double = 12
+    @AppStorage("metalTerminal") private var metalTerminal = false
     @State private var failed = false
     @State private var exited = false
     @State private var openedAt = Date()
@@ -54,8 +56,12 @@ struct AgentTerminal: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
             } else if let h = holder {
-                TerminalPane(holderName: h, wsKey: wsKey, agentWsKey: wsKey, fontSize: CGFloat(fontSize),
-                             onClosed: { onHolderClosed() }).id(h)
+                if metalTerminal {
+                    MetalTerminalPane(holderName: h, wsKey: wsKey, fontSize: CGFloat(fontSize), themeMode: theme.mode).id(h)
+                } else {
+                    TerminalPane(holderName: h, wsKey: wsKey, agentWsKey: wsKey, fontSize: CGFloat(fontSize),
+                                 onClosed: { onHolderClosed() }).id(h)
+                }
             } else if failed {
                 Text("Could not start agent").font(.system(size: 12)).foregroundStyle(Theme.danger)
                     .frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.bg)
