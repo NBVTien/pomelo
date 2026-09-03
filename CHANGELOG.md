@@ -4,6 +4,15 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-09-03
+
+### Added
+- PR conversation reads like GitHub: a review's inline comments are grouped into threads nested under the review, with the root comment and its replies in one card, relative timestamps, and Bot/Author tags. Resolved threads collapse by default so a long review stays scannable, and each thread expands on its own without re-rendering the rest of the timeline. (#80)
+- Experimental GPU (Metal) terminal renderer, opt-in behind a flag: scrollback, text selection that sticks to the text as it scrolls, drag-to-select auto-scroll past the top and bottom edges, bold / dim / inverse styling, SF Mono at the configured font size, and Cmd+K to clear. (#80)
+
+### Fixed
+- The app no longer writes a performance log to /tmp on every launch; that log is created only while the Perf HUD is enabled and removed when it is turned off. (#80)
+
 ## [0.5.2] - 2026-09-03
 
 ### Fixed
