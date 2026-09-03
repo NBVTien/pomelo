@@ -4,6 +4,11 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-09-03
+
+### Fixed
+- The app stays responsive under a busy workspace. State updates no longer re-render the whole window on every poll: the app-wide store and its hot view models moved to per-property observation, so a view only redraws when a value it reads changes. The agent status orb now animates on the compositor instead of a run-loop animation that pinned the display at max refresh, and the terminal mirror coalesces a log firehose instead of feeding the main thread every frame. Sidebar transitions, the services grid, and the command palette are smooth again and battery use drops. (#79)
+
 ## [0.5.1] - 2026-09-01
 
 ### Changed
