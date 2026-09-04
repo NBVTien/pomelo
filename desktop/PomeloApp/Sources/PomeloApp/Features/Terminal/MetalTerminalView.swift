@@ -42,8 +42,8 @@ struct OpenMetalSpikeButton: View {
 }
 
 struct MetalTerminalToggle: View {
-    @AppStorage("metalTerminal") private var on = false
-    var body: some View { Toggle("Use Metal Terminal (experimental)", isOn: $on) }
+    @AppStorage("metalTerminal") private var on = true
+    var body: some View { Toggle("Use Metal Terminal (GPU)", isOn: $on) }
 }
 
 struct MetalTermStatsToggle: View {
@@ -58,17 +58,18 @@ struct MetalTerminalPane: NSViewRepresentable {
     let wsKey: String
     var autorun: String? = nil
     var fontSize: CGFloat = 12
+    var fontFamily: String = ""
     var themeMode: ThemeMode = activeThemeMode
     var onClosed: () -> Void = {}
     func makeCoordinator() -> Coord { Coord() }
     func makeNSView(context: Context) -> MetalTerminalView {
         let v = MetalTerminalView(frame: .zero)
-        v.setFontSize(fontSize)
+        v.setFont(family: fontFamily, size: fontSize)
         v.applyTheme(themeMode)
         context.coordinator.attach(view: v, name: holderName, wsKey: wsKey, autorun: autorun, onClosed: onClosed)
         return v
     }
-    func updateNSView(_ nsView: MetalTerminalView, context: Context) { nsView.setFontSize(fontSize); nsView.applyTheme(themeMode) }
+    func updateNSView(_ nsView: MetalTerminalView, context: Context) { nsView.setFont(family: fontFamily, size: fontSize); nsView.applyTheme(themeMode) }
     static func dismantleNSView(_ nsView: MetalTerminalView, coordinator: Coord) { coordinator.detach() }
 
     final class Coord {
@@ -116,6 +117,8 @@ struct CellInstance {
     var uvSize: SIMD2<Float> = .zero       // glyph tile size in atlas (0..1)
     var fg: SIMD4<Float> = .zero
     var bg: SIMD4<Float> = .zero
+    var underline: Float = 0
+    var cellW: Float = 1     // quad width in cells (2 for a wide glyph)
 }
 
 struct TermUniforms {
@@ -131,7 +134,8 @@ struct CellDesc {
     var fg: SIMD4<Float> = .zero
     var bg: SIMD4<Float> = .zero
     var ch: Character? = nil
-    var style: Int = 0   // 0 regular, |1 bold, |2 italic
+    var style: Int = 0    // 0 regular, |1 bold, |2 italic, |4 underline
+    var wide = false      // CJK / emoji / nerd-font: the glyph spans two cells
 }
 
 // One tile per unique scalar, cell-sized, so the fragment shader samples a glyph by
@@ -141,15 +145,20 @@ final class GlyphAtlas {
     let tilePx: SIMD2<Int>
     private let cols: Int
     private var next = 0
-    private var map: [String: SIMD2<Float>] = [:]
+    private var map: [String: (origin: SIMD2<Float>, size: SIMD2<Float>)] = [:]
     let uvSize: SIMD2<Float>
     private let font: CTFont
     private let boldFont: CTFont
+    private let italicFont: CTFont
+    private let boldItalicFont: CTFont
     private let descent: CGFloat
 
     init?(device: MTLDevice, font: CTFont, cellW: Int, cellH: Int, atlasSide: Int = 4096) {
+        let sz = CTFontGetSize(font)
         self.font = font
-        self.boldFont = CTFontCreateCopyWithSymbolicTraits(font, CTFontGetSize(font), nil, .boldTrait, .boldTrait) ?? font
+        self.boldFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, .boldTrait, .boldTrait) ?? font
+        self.italicFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, .italicTrait, .italicTrait) ?? font
+        self.boldItalicFont = CTFontCreateCopyWithSymbolicTraits(font, sz, nil, [.boldTrait, .italicTrait], [.boldTrait, .italicTrait]) ?? font
         self.descent = CTFontGetDescent(font)
         self.tilePx = SIMD2(cellW, cellH)
         self.cols = max(1, atlasSide / cellW)
@@ -160,21 +169,73 @@ final class GlyphAtlas {
         self.texture = tex
     }
 
-    func uvOrigin(for ch: Character, bold: Bool = false) -> SIMD2<Float> {
-        let key = (bold ? "\u{1}" : "") + String(ch)
-        if let uv = map[key] { return uv }
+    func glyph(for ch: Character, bold: Bool = false, italic: Bool = false, wide: Bool = false) -> (origin: SIMD2<Float>, size: SIMD2<Float>) {
+        let key = (bold ? "\u{1}" : "") + (italic ? "\u{2}" : "") + (wide ? "\u{3}" : "") + String(ch)
+        if let g = map[key] { return g }
         PerfHUD.shared.tick("term:raster")
-        let slot = next; next += 1
+        let tiles = wide ? 2 : 1
+        if wide && next % cols == cols - 1 { next += 1 }   // keep both tiles on one row
+        let slot = next; next += tiles
         let cx = slot % cols, cy = slot / cols
         let px = cx * tilePx.x, py = cy * tilePx.y
-        rasterize(ch, bold: bold, intoTileAt: px, py)
-        let uv = SIMD2(Float(px) / Float(texture.width), Float(py) / Float(texture.height))
-        map[key] = uv
-        return uv
+        rasterize(ch, bold: bold, italic: italic, wide: wide, intoTileAt: px, py)
+        let g = (origin: SIMD2(Float(px) / Float(texture.width), Float(py) / Float(texture.height)),
+                 size: SIMD2(uvSize.x * Float(tiles), uvSize.y))
+        map[key] = g
+        return g
     }
 
-    private func rasterize(_ ch: Character, bold: Bool, intoTileAt px: Int, _ py: Int) {
-        let w = tilePx.x, h = tilePx.y
+    private func hasGlyph(_ f: CTFont, _ units: [UniChar]) -> Bool {
+        var g = [CGGlyph](repeating: 0, count: units.count)
+        _ = CTFontGetGlyphsForCharacters(f, units, &g, units.count)
+        // For an astral codepoint (surrogate pair) the glyph lands in g[0] and the low
+        // surrogate maps to 0, so check the first glyph — not every unit.
+        return (g.first ?? 0) != 0
+    }
+
+    // CTLine draw at the text baseline; auto-cascades to a system font for glyphs the
+    // base font lacks (emoji, symbols).
+    private func drawText(_ ch: Character, font f: CTFont, ctx: CGContext) {
+        let attrs = [kCTFontAttributeName: f,
+                     kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
+        guard let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) else { return }
+        let line = CTLineCreateWithAttributedString(astr)
+        ctx.textPosition = CGPoint(x: 0, y: descent)
+        CTLineDraw(line, ctx)
+    }
+
+    // Nerd Font / icon glyphs live in the Private Use Areas. They carry metrics that
+    // don't sit at the text baseline, so fit them into the cell instead of baseline-drawing.
+    static func isIconGlyph(_ v: UInt32) -> Bool {
+        (0xE000...0xF8FF).contains(v) || (0xF0000...0x10FFFD).contains(v)
+    }
+
+    // Scale + center the glyph to fill the cell (like Alacritty/Ghostty do for icons),
+    // so devicons render fully instead of clipping to blank. Returns false if it can't
+    // resolve the glyph (caller falls back to the normal path).
+    private func drawIconFit(_ ch: Character, font f: CTFont, ctx: CGContext, w: Int, h: Int) -> Bool {
+        let units = Array(String(ch).utf16)
+        var glyphs = [CGGlyph](repeating: 0, count: units.count)
+        _ = CTFontGetGlyphsForCharacters(f, units, &glyphs, units.count)   // astral: glyph in [0], low surrogate 0
+        guard let g = glyphs.first, g != 0 else { return false }
+        var bbox = CGRect.zero
+        _ = withUnsafePointer(to: g) { CTFontGetBoundingRectsForGlyphs(f, .horizontal, $0, &bbox, 1) }
+        guard bbox.width > 0.5, bbox.height > 0.5 else { return false }
+        let pad = CGFloat(w) * 0.06
+        let scale = min((CGFloat(w) - 2 * pad) / bbox.width, (CGFloat(h) - 2 * pad) / bbox.height)
+        let tx = (CGFloat(w) - bbox.width * scale) / 2 - bbox.minX * scale
+        let ty = (CGFloat(h) - bbox.height * scale) / 2 - bbox.minY * scale
+        ctx.saveGState()
+        ctx.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        ctx.translateBy(x: tx, y: ty); ctx.scaleBy(x: scale, y: scale)
+        var pos = CGPoint.zero
+        withUnsafePointer(to: g) { gp in withUnsafePointer(to: pos) { pp in CTFontDrawGlyphs(f, gp, pp, 1, ctx) } }
+        ctx.restoreGState()
+        return true
+    }
+
+    private func rasterize(_ ch: Character, bold: Bool, italic: Bool, wide: Bool, intoTileAt px: Int, _ py: Int) {
+        let w = tilePx.x * (wide ? 2 : 1), h = tilePx.y
         // CTLine (which shapes the whole grapheme, incl. Vietnamese/combining marks)
         // needs a color context; it does not draw in a gray-only one. Rasterize white
         // text on black in RGBA, then keep the red channel as the R8 coverage.
@@ -182,12 +243,23 @@ final class GlyphAtlas {
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
         ctx.setFillColor(red: 0, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        let attrs = [kCTFontAttributeName: bold ? boldFont : font,
-                     kCTForegroundColorAttributeName: CGColor(red: 1, green: 1, blue: 1, alpha: 1)] as CFDictionary
-        if let astr = CFAttributedStringCreate(nil, String(ch) as CFString, attrs) {
-            let line = CTLineCreateWithAttributedString(astr)
-            ctx.textPosition = CGPoint(x: 0, y: descent)
-            CTLineDraw(line, ctx)
+        let base = bold && italic ? boldItalicFont : bold ? boldFont : italic ? italicFont : font
+        let units = Array(String(ch).utf16)
+        let scalar = ch.unicodeScalars.first?.value ?? 0
+        if ch.unicodeScalars.count == 1, Self.isIconGlyph(scalar) {
+            // Nerd Font icon: draw with the base font, or a fallback that has it, scaled
+            // + centered to fit the cell (Ghostty's glyph-constraint approach).
+            let iconFont = hasGlyph(base, units) ? base
+                : CTFontCreateForString(base, String(ch) as CFString, CFRange(location: 0, length: units.count))
+            if hasGlyph(iconFont, units), drawIconFit(ch, font: iconFont, ctx: ctx, w: w, h: h) {
+                // constrained icon drawn
+            } else {
+                drawText(ch, font: base, ctx: ctx)
+            }
+        } else {
+            // Text / symbols: CTLine draws with the base font and auto-cascades to a
+            // system font for anything it lacks (emoji, the agent statusline glyphs).
+            drawText(ch, font: base, ctx: ctx)
         }
         guard let data = ctx.data else { return }
         let rgba = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
@@ -278,10 +350,6 @@ final class MetalTerminalView: NSView {
         metalLayer.device = device
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = true
-        // The spike window has rounded corners; clip the layer so the sharp
-        // rectangle doesn't poke past them. Harmless when embedded in a pane.
-        metalLayer.cornerRadius = 10
-        metalLayer.masksToBounds = true
         setupFontAndAtlas()
         setupPipeline()
         statsLabel.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
@@ -294,38 +362,70 @@ final class MetalTerminalView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    // Match the SwiftTerm pane: SF Mono at the configured size, not a hardcoded Menlo.
     private var fontSize: CGFloat = 12
 
-    func setFontSize(_ s: CGFloat) {
-        guard abs(fontSize - s) > 0.1 else { return }
-        fontSize = s
+    // The configured monospace font family (empty = SF Mono). Pick a Nerd Font here to
+    // get devicon glyphs; unlike a cascade fallback, the whole font's metrics are used
+    // so icons sit in the cell correctly.
+    private var fontFamily = ""
+
+    func setFont(family: String, size: CGFloat) {
+        guard family != fontFamily || abs(size - fontSize) > 0.1 else { return }
+        fontFamily = family; fontSize = size
         setupFontAndAtlas()
         lastYDisp = -1
         needsLayout = true
     }
 
+    static func monoFont(_ size: CGFloat, family: String) -> CTFont {
+        if !family.isEmpty {
+            let d = NSFontDescriptor(fontAttributes: [.family: family])
+            if let f = NSFont(descriptor: d, size: size) { return f as CTFont }
+        }
+        return NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
+    }
+
+    // Families for the Settings picker: monospace fonts, plus every Nerd Font (the
+    // non-"Mono" Nerd variants aren't flagged monospace but are the ones people run in
+    // a terminal for full icon coverage).
+    static func monospaceFamilies() -> [String] {
+        let coll = CTFontCollectionCreateFromAvailableFonts(nil)
+        let all = (CTFontCollectionCreateMatchingFontDescriptors(coll) as? [CTFontDescriptor]) ?? []
+        var out = Set<String>()
+        for d in all {
+            guard let fam = CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute) as? String, !fam.hasPrefix(".") else { continue }
+            if fam.lowercased().contains("nerd font") { out.insert(fam); continue }
+            let traits = (CTFontDescriptorCopyAttribute(d, kCTFontTraitsAttribute) as? [CFString: Any]) ?? [:]
+            let sym = (traits[kCTFontSymbolicTrait] as? UInt32) ?? 0
+            if sym & CTFontSymbolicTraits.traitMonoSpace.rawValue != 0 { out.insert(fam) }
+        }
+        return out.sorted()
+    }
+
     private func setupFontAndAtlas() {
-        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular) as CTFont
+        let font = Self.monoFont(fontSize, family: fontFamily)
         let advance = self.advanceWidth(font)
         let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font), leading = CTFontGetLeading(font)
         let scale = Float(window?.backingScaleFactor ?? 2)
         let cw = Int((advance * CGFloat(scale)).rounded(.up))
         let ch = Int(((ascent + descent + leading) * CGFloat(scale)).rounded(.up))
         cellPx = SIMD2(Float(cw), Float(ch))
-        let scaledFont = NSFont.monospacedSystemFont(ofSize: fontSize * CGFloat(scale), weight: .regular) as CTFont
+        let scaledFont = Self.monoFont(fontSize * CGFloat(scale), family: fontFamily)
         // Shared per (cellW,cellH): every terminal has the same font/scale, so a new
         // terminal (workspace switch) or a burst of varied text reuses already-
         // rasterized glyphs instead of re-paying ~1-2ms of CTLine draw each on main.
         atlas = Self.sharedAtlas(font: scaledFont, cellW: cw, cellH: ch)
         // Pre-rasterize printable ASCII so the parse queue never writes the atlas
         // texture mid-frame while the GPU samples it (no-op once the shared atlas is warm).
-        for u in 32...126 { if let s = UnicodeScalar(u) { _ = atlas.uvOrigin(for: Character(s)) } }
+        for u in 32...126 { if let s = UnicodeScalar(u) { _ = atlas.glyph(for: Character(s)) } }
     }
 
     private static var atlasCache: [String: GlyphAtlas] = [:]
     private static func sharedAtlas(font: CTFont, cellW: Int, cellH: Int) -> GlyphAtlas {
-        let key = "\(cellW)x\(cellH)"
+        // Key by the font too: a different family at the same cell size must not reuse
+        // another font's rasterized glyphs.
+        let name = (CTFontCopyPostScriptName(font) as String)
+        let key = "\(name)|\(cellW)x\(cellH)"
         if let a = atlasCache[key] { return a }
         let a = GlyphAtlas(device: sharedDevice, font: font, cellW: cellW, cellH: cellH)!
         atlasCache[key] = a
@@ -348,10 +448,13 @@ final class MetalTerminalView: NSView {
         fedBytes += bytes.count
         parseQueue.async { [weak self] in
             guard let self else { return }
+            let before = self.terminal.buffer.yDisp
             self.terminal.feed(byteArray: bytes)
-            // Output snaps the viewport back to the live bottom (SwiftTerm's userScrolling
-            // is module-internal, so we can't hold position across output); capture it.
+            // SwiftTerm snaps the viewport to the live bottom on output (its userScrolling
+            // flag is module-internal). If the user has scrolled up, restore their position
+            // so streaming output doesn't yank them to the bottom.
             self.scrollBottomYDisp = self.terminal.buffer.yDisp
+            if self.userScrolledUp { self.terminal.buffer.yDisp = min(before, self.scrollBottomYDisp) }
             let t0 = CACurrentMediaTime()
             let descs = self.buildDescs()
             let yd = self.terminal.buffer.yDisp
@@ -381,6 +484,15 @@ final class MetalTerminalView: NSView {
     }
 
     override var acceptsFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool { isFocused = true; refreshCursor(); return super.becomeFirstResponder() }
+    override func resignFirstResponder() -> Bool { isFocused = false; refreshCursor(); return super.resignFirstResponder() }
+    private func refreshCursor() {
+        parseQueue.async { [weak self] in
+            guard let self else { return }
+            let descs = self.buildDescs()
+            DispatchQueue.main.async { self.latestDescs = descs; self.needsPresent = true }
+        }
+    }
 
     private enum DragKind { case none, select, app }
     private var dragKind: DragKind = .none
@@ -394,9 +506,34 @@ final class MetalTerminalView: NSView {
         window?.makeFirstResponder(self)
         if mouseModeOn && !event.modifierFlags.contains(.option) {
             dragKind = .app; sendMouseSGR(event, code: 0, press: true)
-        } else {
-            dragKind = .select; let c = selCell(at: event); selStart = c; selEnd = c; needsPresent = true
+            return
         }
+        let (col, row) = cell(at: event)
+        if event.clickCount == 2 {                    // double-click: word
+            let (lo, hi) = wordRange(col: col, row: row)
+            selStart = (lo, row + viewYDisp); selEnd = (hi, row + viewYDisp)
+            dragKind = .none; needsPresent = true
+            return
+        }
+        if event.clickCount >= 3 {                    // triple-click: whole line
+            selStart = (0, row + viewYDisp); selEnd = (max(0, termCols - 1), row + viewYDisp)
+            dragKind = .none; needsPresent = true
+            return
+        }
+        dragKind = .select; let c = selCell(at: event); selStart = c; selEnd = c; needsPresent = true
+    }
+
+    private func wordRange(col: Int, row: Int) -> (Int, Int) {
+        func isWord(_ c: Int) -> Bool {
+            guard c >= 0, c < terminal.cols, let cd = terminal.getCharData(col: c, row: row) else { return false }
+            let ch = cd.getCharacter()
+            return ch != " " && ch != "\t" && ch != "\u{0}"
+        }
+        guard isWord(col) else { return (col, col) }
+        var lo = col, hi = col
+        while lo > 0, isWord(lo - 1) { lo -= 1 }
+        while hi < terminal.cols - 1, isWord(hi + 1) { hi += 1 }
+        return (lo, hi)
     }
     // Absolute buffer cell (screen row offset by the current viewport) so a selection
     // sticks to its text while the viewport scrolls.
@@ -451,6 +588,7 @@ final class MetalTerminalView: NSView {
             let target = max(0, min(cur + dir, self.scrollBottomYDisp))
             guard target != cur else { return }
             self.terminal.buffer.yDisp = target
+            self.userScrolledUp = target < self.scrollBottomYDisp
             let descs = self.buildDescs()
             DispatchQueue.main.async {
                 self.viewYDisp = target
@@ -505,7 +643,9 @@ final class MetalTerminalView: NSView {
     // The live bottom (== buffer.yBase, which isn't public) captured after each feed;
     // scrollback clamps between 0 and this. lastYDisp forces a full refill on a move.
     private var scrollBottomYDisp = 0
+    private var userScrolledUp = false   // holds the viewport across streaming output
     private var lastYDisp = -1
+    private var isFocused = false         // dims the cursor when the terminal isn't first responder
     // yDisp of the currently-presented frame, mirrored on the main thread so mouse
     // events and selection hit-testing agree with what's on screen.
     private var viewYDisp = 0
@@ -574,6 +714,7 @@ final class MetalTerminalView: NSView {
             let target = max(0, min(cur - lines, self.scrollBottomYDisp))
             guard target != cur else { return }
             self.terminal.buffer.yDisp = target
+            self.userScrolledUp = target < self.scrollBottomYDisp
             let descs = self.buildDescs()
             DispatchQueue.main.async { self.latestDescs = descs; self.viewYDisp = target; self.needsPresent = true }
         }
@@ -651,15 +792,26 @@ final class MetalTerminalView: NSView {
             for col in 0..<cols {
                 var d = CellDesc()
                 d.gridPos = SIMD2(Float(col), Float(row))
+                if let cd = terminal.getCharData(col: col, row: row), cd.width == 0 {
+                    // Second half of a wide glyph: draw nothing so the 2-cell glyph from
+                    // the previous column isn't overpainted.
+                    d.bg = SIMD4(0, 0, 0, 0)
+                    grid[row * cols + col] = d
+                    continue
+                }
                 if let cd = terminal.getCharData(col: col, row: row) {
                     let st = cd.attribute.style
+                    if cd.width == 2 { d.wide = true }
                     var fg = color(cd.attribute.fg, def: defFg)
                     var bg = color(cd.attribute.bg, def: defBg)
                     if st.contains(.inverse) { swap(&fg, &bg) }
                     if st.contains(.dim) { fg = SIMD4(fg.x * 0.6, fg.y * 0.6, fg.z * 0.6, fg.w) }
                     d.fg = fg; d.bg = bg
                     if st.contains(.bold) { d.style |= 1 }
-                    let ch = cd.getCharacter()
+                    if st.contains(.italic) { d.style |= 2 }
+                    if st.contains(.underline) { d.style |= 4 }
+                    if st.contains(.crossedOut) { d.style |= 8 }
+                    let ch = terminal.getCharacter(for: cd)   // NOT cd.getCharacter(): astral scalars (Material Design nerd icons, U+F0000+) are stored via the terminal's grapheme-index map; the CharData-only getter returns a space for them
                     if ch != " ", let scalar = ch.unicodeScalars.first, scalar.value != 0 { d.ch = ch }
                 } else {
                     d.bg = defBg
@@ -673,7 +825,7 @@ final class MetalTerminalView: NSView {
         var c = CellDesc()
         c.gridPos = SIMD2(Float(min(max(0, terminal.buffer.x), cols - 1)),
                           Float(min(max(0, terminal.buffer.y), rows - 1)))
-        c.bg = SIMD4(0.55, 0.78, 1.0, 0.5)   // translucent block over the cell
+        c.bg = SIMD4(0.55, 0.78, 1.0, isFocused ? 0.5 : 0.22)   // dimmer block when unfocused
         return c
     }
 
@@ -685,7 +837,12 @@ final class MetalTerminalView: NSView {
             var i = CellInstance()
             i.gridPos = d.gridPos; i.fg = d.fg; i.bg = d.bg
             if hasSel, selectionContains(Int(d.gridPos.x), Int(d.gridPos.y)) { i.bg = SIMD4(0.20, 0.35, 0.60, 1) }
-            if let ch = d.ch { i.uvOrigin = atlas.uvOrigin(for: ch, bold: d.style & 1 != 0); i.uvSize = atlas.uvSize }
+            if let ch = d.ch {
+                let g = atlas.glyph(for: ch, bold: d.style & 1 != 0, italic: d.style & 2 != 0, wide: d.wide)
+                i.uvOrigin = g.origin; i.uvSize = g.size
+            }
+            i.underline = Float((d.style & 4 != 0 ? 1 : 0) | (d.style & 8 != 0 ? 2 : 0))   // bit0 underline, bit1 strike
+            i.cellW = d.wide ? 2 : 1
             return i
         }
     }
@@ -797,9 +954,9 @@ final class MetalTerminalView: NSView {
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Cell { float2 gridPos; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; };
+    struct Cell { float2 gridPos; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; float underline; float cellW; };
     struct Uniforms { float2 viewportPx; float2 cellPx; };
-    struct VOut { float4 pos [[position]]; float2 cellUV; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; };
+    struct VOut { float4 pos [[position]]; float2 cellUV; float2 uvOrigin; float2 uvSize; float4 fg; float4 bg; float underline; };
 
     vertex VOut term_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
                             const device Cell* cells [[buffer(0)]], constant Uniforms& u [[buffer(1)]]) {
@@ -807,13 +964,13 @@ final class MetalTerminalView: NSView {
         float2 corner = quad[vid];
         Cell c = cells[iid];
         float2 originPx = c.gridPos * u.cellPx;
-        float2 px = originPx + corner * u.cellPx;
+        float2 px = originPx + corner * float2(u.cellPx.x * c.cellW, u.cellPx.y);
         float2 ndc = (px / u.viewportPx) * 2.0 - 1.0;
         ndc.y = -ndc.y;
         VOut o;
         o.pos = float4(ndc, 0, 1);
         o.cellUV = corner;
-        o.uvOrigin = c.uvOrigin; o.uvSize = c.uvSize; o.fg = c.fg; o.bg = c.bg;
+        o.uvOrigin = c.uvOrigin; o.uvSize = c.uvSize; o.fg = c.fg; o.bg = c.bg; o.underline = c.underline;
         return o;
     }
 
@@ -824,6 +981,9 @@ final class MetalTerminalView: NSView {
             float2 auv = in.uvOrigin + in.cellUV * in.uvSize;
             coverage = atlas.sample(s, auv).r;
         }
+        int lf = int(in.underline + 0.5);
+        if ((lf & 1) != 0 && in.cellUV.y > 0.88 && in.cellUV.y < 0.96) { coverage = 1.0; }
+        if ((lf & 2) != 0 && in.cellUV.y > 0.46 && in.cellUV.y < 0.54) { coverage = 1.0; }
         return mix(in.bg, in.fg, coverage);
     }
     """

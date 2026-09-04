@@ -79,14 +79,15 @@ struct ServicesBoard: View {
                     Text(investigating ? "Creating…" : "Scratch workspace").font(.system(size: 12, weight: .medium))
                 }
                 .foregroundStyle(Theme.fgMuted)
-                .padding(.horizontal, 10).padding(.vertical, 4)
+                .padding(.horizontal, 10).padding(.vertical, 3)
                 .background(Theme.chip, in: Capsule())
                 .overlay(Capsule().strokeBorder(Theme.chipBd))
             }
             .buttonStyle(.plain).disabled(investigating)
             .help("Create a throwaway investigate-<date> workspace (all main repos) to reproduce a bug in isolation — no ticket/branch to name.")
         }
-        .padding(.horizontal, 14).padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .frame(height: 33)
         .background(Theme.bgSoft)
         .overlay(Rectangle().fill(Theme.borderSoft).frame(height: 1), alignment: .bottom)
     }
@@ -269,7 +270,6 @@ struct SvcCard: View, Equatable {
             if expands {
                 Divider().overlay(Theme.borderSoft)
                 expansion
-                    .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -535,6 +535,9 @@ struct CrashLogSheet: View {
 }
 
 struct SvcPeekView: View {
+    // Observe the theme so a theme switch re-evaluates the body: it reads the static
+    // Theme.bg, and with unchanged `lines` SwiftUI would otherwise keep the stale color.
+    @EnvironmentObject var theme: ThemeManager
     let lines: [String]
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -545,7 +548,7 @@ struct SvcPeekView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(Theme.bg)
+        .background(Theme.bg, in: UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10))
     }
 }
 
