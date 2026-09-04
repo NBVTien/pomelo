@@ -4,7 +4,7 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.4] - 2026-09-04
 
 ### Changed
 - The GPU (Metal) terminal renderer is now the default. It reaches parity with the previous renderer and adds glyph-atlas rendering: scrollback, text selection that sticks to the text as it scrolls (with drag-to-select auto-scroll past the top and bottom edges), bold / dim / inverse / italic / underline / strikethrough, wide (CJK) characters, a cursor that dims when the terminal is unfocused, and Cmd+K to clear. (#81)
