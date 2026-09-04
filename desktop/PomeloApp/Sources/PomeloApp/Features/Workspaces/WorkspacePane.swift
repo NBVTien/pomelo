@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum PaneKind: String, CaseIterable, Identifiable {
-    case claude = "Claude", services = "Services", prs = "PRs", git = "Git", jira = "Jira", database = "Database", review = "Review"
+    case claude = "Claude", services = "Services", prs = "PRs", git = "Git", jira = "Jira", database = "Database", review = "Review", files = "Files"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -12,6 +12,7 @@ enum PaneKind: String, CaseIterable, Identifiable {
         case .jira:     return "ticket"
         case .database: return "cylinder.split.1x2"
         case .review:   return "doc.text.magnifyingglass"
+        case .files:    return "folder"
         }
     }
 }
@@ -229,6 +230,7 @@ struct WorkspacePaneInner: View {
         case .git:    GitPanel(workspace: workspace).id("git-\(safeWs)")
         case .jira:   JiraPane(workspace: workspace)
         case .database: DatabasePane(workspace: workspace).id("db-\(safeWs)")
+        case .files:  FilesPane(workspace: workspace).id("files-\(safeWs)")
         case .review:
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in
                 opened.insert(.claude)
@@ -273,6 +275,7 @@ struct WorkspacePaneInner: View {
             navBtn(.jira, "4", "Jira")
             navBtn(.database, "5", "Database")
             navBtn(.review, "6", "Review")
+            navBtn(.files, "7", "Files")
             editorBtn
             if spread { Spacer(minLength: 8) } else { Spacer().frame(width: 10) }
             agentToggle
