@@ -7,6 +7,7 @@ All notable changes to Pomelo are documented here. The format is based on
 ## [Unreleased]
 
 ### Changed
+- The PRs and Git panes are merged into one Git pane. Local changes now show git status inline in the diff file tree — stage, unstage, and discard on hover, commit staged changes, and push — instead of a separate flat changes list.
 - The GPU (Metal) terminal renderer is now the default. It reaches parity with the previous renderer and adds glyph-atlas rendering: scrollback, text selection that sticks to the text as it scrolls (with drag-to-select auto-scroll past the top and bottom edges), bold / dim / inverse / italic / underline / strikethrough, wide (CJK) characters, a cursor that dims when the terminal is unfocused, and Cmd+K to clear. (#81)
 
 ### Added

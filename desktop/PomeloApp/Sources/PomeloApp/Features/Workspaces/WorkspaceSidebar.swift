@@ -159,7 +159,7 @@ struct WsRow: View {
                pullOn: ws.isMain && state.syncOn, pullIntervalSec: state.syncIntervalSec, pulling: ws.isMain && state.syncPulling,
                pulledAt: ws.isMain ? state.syncPulledAt : nil, pullProgress: ws.isMain ? state.syncProgress : [],
                jira: state.jiraFor(ws.branch), themeMode: theme.mode,
-               onOpenPRs: { state.selection = ws.id; ui.state(for: ws.id).pane = .prs },
+               onOpenPRs: { state.selection = ws.id; ui.state(for: ws.id).pane = .git },
                onOpenJira: { state.selection = ws.id; ui.state(for: ws.id).pane = .jira },
                onPeekEnter: { state.prPeekEnter(ws.id) }, onPeekLeave: { state.prPeekLeave() })
             .equatable()
@@ -190,8 +190,8 @@ struct RowContextMenu: View {
             if ws.running > 0 {
                 PopItem("Stop all services", icon: "stop.fill") { dismiss(); state.stopAllServices(ws) }
             }
+            PopItem("Git", icon: "arrow.triangle.branch") { dismiss(); state.selection = ws.id; ui.state(for: ws.id).pane = .git }
             if !ws.isMain {
-                PopItem("Pull requests", icon: "arrow.triangle.pull") { dismiss(); state.selection = ws.id; ui.state(for: ws.id).pane = .prs }
                 PopItem("Jira ticket", icon: "ticket") { dismiss(); state.selection = ws.id; ui.state(for: ws.id).pane = .jira }
                 Divider().padding(.vertical, 2)
                 PopItem("Delete workspace", icon: "trash", destructive: true) { dismiss(); state.confirmDeleteWs = ws }
