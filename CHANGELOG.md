@@ -16,7 +16,7 @@ All notable changes to Pomelo are documented here. The format is based on
 ### Fixed
 - The terminal, service log peek, split handle, and icon buttons re-tint immediately on a light/dark theme switch instead of keeping stale colors. (#81)
 - Squared the top corners of the Metal terminal and the service peek log, and matched the agent and golden-source header heights. (#81)
-- The dev app build no longer drops a `default.profraw` file into whatever directory Claude Code happens to be working in. The globally installed Claude Code hook re-execs the app binary on every tool-use event, and the Debug build was compiled with code coverage instrumentation on, so each re-exec wrote a coverage file to the current directory.
+- Pomelo.app no longer drops a `default.profraw` file into whatever directory Claude Code happens to be working in. The globally installed Claude Code hook re-execs the app binary on every tool-use event, and both the Debug and Release builds were compiled with code coverage instrumentation on, so each re-exec wrote a coverage file to the current directory — for every project on the machine, not just Pomelo workspaces.
 
 ## [0.5.3] - 2026-09-03
 
