@@ -34,6 +34,7 @@ private enum FilePreview {
 struct FilesPane: View {
     @EnvironmentObject var theme: ThemeManager
     let workspace: Workspace
+    var onAskAgent: (String) -> Void = { _ in }
     @ObservedObject private var codeDisplay = CodeDisplayManager.shared
 
     @State private var entries: [WorkspaceFileEntry]?
@@ -41,6 +42,8 @@ struct FilesPane: View {
     @State private var selected: WorkspaceFileEntry?
     @State private var preview: FilePreview = .loading
     @State private var treeVisible = true
+    @State private var selLines: ClosedRange<Int>?
+    @State private var question = ""
 
     var body: some View {
         GeometryReader { geo in
@@ -65,7 +68,7 @@ struct FilesPane: View {
         }
         .background(Theme.bg)
         .task { await load() }
-        .task(id: selected?.id) { await loadPreview() }
+        .task(id: selected?.id) { selLines = nil; question = ""; await loadPreview() }
     }
 
     private var tree: some View {
@@ -120,8 +123,17 @@ struct FilesPane: View {
             case .loading:
                 LoadingView(text: "loading…")
             case .text(let s):
-                CodeView(content: s, lang: CodeLang.detect(path: sel.path),
-                         start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode)
+                VStack(spacing: 0) {
+                    CodeView(content: s, lang: CodeLang.detect(path: sel.path),
+                             start: 0, end: 0, isDark: theme.mode.isDark, wrapMode: codeDisplay.wrapMode,
+                             onSelectLines: { sel in
+                                 withAnimation(.easeInOut(duration: 0.12)) { selLines = sel }
+                             })
+                    if let lines = selLines {
+                        Divider().overlay(Theme.borderSoft)
+                        askBar(file: sel, lines: lines)
+                    }
+                }
             case .image(let img):
                 FileImageView(image: img)
             case .unsupported(let mime):
@@ -132,6 +144,39 @@ struct FilesPane: View {
         } else {
             EmptyStateView(icon: "doc.text", title: "Select a file to preview")
         }
+    }
+
+    private func askBar(file: WorkspaceFileEntry, lines: ClosedRange<Int>) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "text.viewfinder").font(.system(size: 10)).foregroundStyle(Theme.accent)
+            Text("L\(lines.lowerBound)-\(lines.upperBound)")
+                .font(Theme.mono(10.5)).foregroundStyle(Theme.fgMuted).fixedSize()
+            TextField("Ask Claude about these lines…", text: $question)
+                .textFieldStyle(.plain).font(.system(size: 12))
+                .onSubmit { ask(file: file, lines: lines) }
+            Button { ask(file: file, lines: lines) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles").font(.system(size: 10))
+                    Text("Ask").font(.system(size: 12, weight: .medium))
+                }
+                .foregroundStyle(.white).padding(.horizontal, 12).padding(.vertical, 4)
+                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 7))
+            }
+            .buttonStyle(.plain)
+            .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            IconButton("xmark", size: 11, tip: "Dismiss") {
+                withAnimation(.easeInOut(duration: 0.12)) { selLines = nil; question = "" }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Theme.bgSoft)
+    }
+
+    private func ask(file: WorkspaceFileEntry, lines: ClosedRange<Int>) {
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        onAskAgent("[\(file.repo)/\(file.path):\(lines.lowerBound)-\(lines.upperBound)] \(q)")
+        question = ""
     }
 
     private func load() async {

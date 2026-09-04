@@ -230,7 +230,13 @@ struct WorkspacePaneInner: View {
         case .git:    GitPanel(workspace: workspace).id("git-\(safeWs)")
         case .jira:   JiraPane(workspace: workspace)
         case .database: DatabasePane(workspace: workspace).id("db-\(safeWs)")
-        case .files:  FilesPane(workspace: workspace).id("files-\(safeWs)")
+        case .files:
+            FilesPane(workspace: workspace, onAskAgent: { text in
+                opened.insert(.claude)
+                StreamManager.shared.askClaude(wsKey: workspace.id, text: text)
+                ps.agentOpen = true; ps.funcVisible = true
+            })
+            .id("files-\(safeWs)")
         case .review:
             ReviewPane(workspace: workspace, isActive: active, onAskAgent: { text in
                 opened.insert(.claude)
