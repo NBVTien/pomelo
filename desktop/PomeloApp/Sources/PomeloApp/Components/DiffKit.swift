@@ -100,6 +100,9 @@ struct DiffFileList: View {
     @EnvironmentObject var theme: ThemeManager
     let files: [DiffFile]
     @Binding var selected: String?
+    var gitStatus: [String: GitViewModel.Change]? = nil
+    var gitVM: GitViewModel? = nil
+    var gitRepo: String = ""
     @State private var collapsed: Set<String> = []
     // Built once per file list: recomputing it every render reallocates the whole
     // node graph.
@@ -129,10 +132,15 @@ struct DiffFileList: View {
 
     @ViewBuilder private func row(_ node: FileTreeNode, depth: Int) -> some View {
         if let f = node.file {
+            let hover: AnyView? = {
+                guard let change = gitStatus?[f.path], let gitVM else { return nil }
+                return AnyView(GitRowActions(vm: gitVM, repo: gitRepo, change: change))
+            }()
             TreeRow(depth: depth, indent: indent, isDir: false, expanded: false, name: node.name,
                     leadingSymbol: nil, marker: (f.status, statusColor(f.status)),
                     selected: selected == f.path, selectionColor: Theme.sel, nameColor: Theme.fg,
-                    nameWeight: .regular, tooltip: leafTooltip(f, label: node.name)) { selected = f.path }
+                    nameWeight: .regular, tooltip: leafTooltip(f, label: node.name),
+                    hoverTrailing: hover) { selected = f.path }
         } else {
             let isCollapsed = collapsed.contains(node.id)
             TreeRow(depth: depth, indent: indent, isDir: true, expanded: !isCollapsed, name: node.name,
@@ -164,6 +172,33 @@ struct DiffFileList: View {
     }
 }
 
+struct GitRowActions: View {
+    @ObservedObject var vm: GitViewModel
+    let repo: String
+    let change: GitViewModel.Change
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if change.staged {
+                iconButton("minus", "Unstage") { await vm.unstage(repo, [change.path]) }
+            } else {
+                iconButton("arrow.uturn.backward", "Discard", danger: true) { await vm.discard(repo, [change.path]) }
+                iconButton("plus", "Stage") { await vm.stage(repo, [change.path]) }
+            }
+        }
+    }
+
+    private func iconButton(_ icon: String, _ help: String, danger: Bool = false, _ act: @escaping () async -> Void) -> some View {
+        Button { Task { await act() } } label: {
+            Image(systemName: icon).font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(danger ? Theme.danger : Theme.fgMuted)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(vm.busy).tooltip(help)
+    }
+}
+
 struct DiffFilesView: View {
     @EnvironmentObject var theme: ThemeManager
     @ObservedObject private var codeDisplay = CodeDisplayManager.shared
@@ -173,6 +208,9 @@ struct DiffFilesView: View {
     @Binding var splitDiff: Bool
     let loadingLabel: String
     let emptyLabel: String
+    var gitStatus: [String: GitViewModel.Change]? = nil
+    var gitVM: GitViewModel? = nil
+    var gitRepo: String = ""
 
     var body: some View {
         GeometryReader { geo in
@@ -186,8 +224,14 @@ struct DiffFilesView: View {
                     } else {
                         HStack(spacing: 0) {
                             if filesTreeVisible && !overlayTree {
-                                DiffFileList(files: files, selected: $selFile)
-                                    .frame(width: min(260, geo.size.width * 0.4))
+                                VStack(spacing: 0) {
+                                    if let gitVM, let repo = gitVM.repos.first(where: { $0.repo == gitRepo }), !repo.isClean {
+                                        gitTreeToolbar(repo)
+                                        Divider().overlay(Theme.borderSoft)
+                                    }
+                                    DiffFileList(files: files, selected: $selFile, gitStatus: gitStatus, gitVM: gitVM, gitRepo: gitRepo)
+                                }
+                                .frame(width: min(260, geo.size.width * 0.4))
                                 Divider().overlay(Theme.borderSoft)
                             }
                             VStack(spacing: 0) {
@@ -228,10 +272,16 @@ struct DiffFilesView: View {
 
     private func floatingTree(_ files: [DiffFile], width: CGFloat) -> some View {
         HStack(spacing: 0) {
-            DiffFileList(files: files, selected: Binding(
-                get: { selFile },
-                set: { selFile = $0; withAnimation(.easeInOut(duration: 0.14)) { filesTreeVisible = false } }
-            ))
+            VStack(spacing: 0) {
+                if let gitVM, let repo = gitVM.repos.first(where: { $0.repo == gitRepo }), !repo.isClean {
+                    gitTreeToolbar(repo)
+                    Divider().overlay(Theme.borderSoft)
+                }
+                DiffFileList(files: files, selected: Binding(
+                    get: { selFile },
+                    set: { selFile = $0; withAnimation(.easeInOut(duration: 0.14)) { filesTreeVisible = false } }
+                ), gitStatus: gitStatus, gitVM: gitVM, gitRepo: gitRepo)
+            }
             .frame(width: width)
             .background(Theme.bgSoft)
             .overlay(alignment: .trailing) { Rectangle().fill(Theme.border).frame(width: 1) }
@@ -241,6 +291,30 @@ struct DiffFilesView: View {
                 .onTapGesture { withAnimation(.easeInOut(duration: 0.14)) { filesTreeVisible = false } }
         }
         .transition(.move(edge: .leading))
+    }
+
+    private func gitTreeToolbar(_ repo: GitViewModel.RepoStatus) -> some View {
+        HStack(spacing: 8) {
+            if repo.ahead > 0 {
+                Label("\(repo.ahead)", systemImage: "arrow.up").font(.system(size: 10)).foregroundStyle(Theme.ok)
+            }
+            if repo.behind > 0 {
+                Label("\(repo.behind)", systemImage: "arrow.down").font(.system(size: 10)).foregroundStyle(Theme.warn)
+            }
+            Spacer(minLength: 4)
+            if !repo.unstaged.isEmpty {
+                Button("Stage all") { Task { await gitVM?.stage(repo.repo, repo.unstaged.map(\.path)) } }
+                    .buttonStyle(.plain).font(.system(size: 10.5)).foregroundStyle(Theme.accent).disabled(gitVM?.busy ?? false)
+            }
+            if repo.ahead > 0 {
+                Button { Task { await gitVM?.push(repo.repo) } } label: {
+                    Image(systemName: "arrow.up.circle").font(.system(size: 12))
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent).disabled(gitVM?.busy ?? false).tooltip("Push")
+            }
+        }
+        .padding(.horizontal, 10).frame(height: 27)
+        .background(Theme.bgSoft)
     }
 
     private func diffModeBar(path: String?, compact: Bool) -> some View {
@@ -277,7 +351,7 @@ struct DiffFilesView: View {
                 modeBtn("Split", "rectangle.split.2x1", on: splitDiff) { splitDiff = true }
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 5)
+        .padding(.horizontal, 10).frame(height: 27)
         .background(Theme.bgSoft)
     }
 
