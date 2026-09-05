@@ -1,13 +1,12 @@
 import SwiftUI
 
 enum PaneKind: String, CaseIterable, Identifiable {
-    case claude = "Claude", services = "Services", prs = "PRs", git = "Git", jira = "Jira", database = "Database", review = "Review", files = "Files"
+    case claude = "Claude", services = "Services", git = "Git", jira = "Jira", database = "Database", review = "Review", files = "Files"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .claude:   return "sparkles"
         case .services: return "square.grid.2x2"
-        case .prs:      return "arrow.triangle.pull"
         case .git:      return "arrow.triangle.branch"
         case .jira:     return "ticket"
         case .database: return "cylinder.split.1x2"
@@ -226,8 +225,7 @@ struct WorkspacePaneInner: View {
         case .services:
             ServicesBoard(workspace: workspace, openPane: { ps.pane = $0 }, openTerminal: attachLog,
                           onPrepareMain: { state.showPipeline = true })
-        case .prs:    PRsBoard(workspace: workspace)
-        case .git:    GitPanel(workspace: workspace).id("git-\(safeWs)")
+        case .git:    PRsBoard(workspace: workspace).id("git-\(safeWs)")
         case .jira:   JiraPane(workspace: workspace)
         case .database: DatabasePane(workspace: workspace).id("db-\(safeWs)")
         case .files:
@@ -276,12 +274,11 @@ struct WorkspacePaneInner: View {
             .tooltip("Activity (this workspace)", shortcut: "⌘0", align: .topLeading)
             Divider().frame(height: 13).overlay(Theme.borderSoft).padding(.horizontal, 3)
             navBtn(.services, "1", "Services")
-            navBtn(.prs, "2", "PRs")
-            navBtn(.git, "3", "Git")
-            navBtn(.jira, "4", "Jira")
-            navBtn(.database, "5", "Database")
-            navBtn(.review, "6", "Review")
-            navBtn(.files, "7", "Files")
+            navBtn(.git, "2", "Git")
+            navBtn(.jira, "3", "Jira")
+            navBtn(.database, "4", "Database")
+            navBtn(.review, "5", "Review")
+            navBtn(.files, "6", "Files")
             editorBtn
             if spread { Spacer(minLength: 8) } else { Spacer().frame(width: 10) }
             agentToggle
@@ -305,7 +302,7 @@ struct WorkspacePaneInner: View {
     }
 
     private func navDisabled(_ kind: PaneKind) -> Bool {
-        workspace.isMain && (kind == .prs || kind == .jira || kind == .review)
+        workspace.isMain && (kind == .jira || kind == .review)
     }
 
     private func navBtn(_ kind: PaneKind, _ key: KeyEquivalent, _ name: String) -> some View {

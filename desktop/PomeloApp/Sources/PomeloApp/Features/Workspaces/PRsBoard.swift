@@ -197,6 +197,7 @@ struct PRsBoard: View {
 
     enum Selection: Equatable { case pr(String), local(String) }
 
+    @StateObject private var gitVM: GitViewModel
     @State private var prs: [WorkspacePR] = []
     @State private var localChanges: [LocalChangeRepo] = []
     @State private var selection: Selection?
@@ -208,6 +209,11 @@ struct PRsBoard: View {
     @AppStorage("prs.masterWidth") private var masterWidth = 320.0
     @AppStorage("prs.sectionExpanded") private var sectionExpanded = true
     @AppStorage("prs.localSectionExpanded") private var localSectionExpanded = true
+
+    init(workspace: Workspace) {
+        self.workspace = workspace
+        _gitVM = StateObject(wrappedValue: GitViewModel(branch: workspace.branch, isMain: workspace.isMain))
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -228,6 +234,7 @@ struct PRsBoard: View {
                 }
             }
             await load(); startPolling()
+            await gitVM.load()
         }
         .onDisappear { pollTask?.cancel() }
         .perfTag("PRsBoard")
@@ -267,7 +274,7 @@ struct PRsBoard: View {
             } else { emptyDetail }
         case .local(let repo):
             if let it = localChanges.first(where: { $0.repo == repo }) {
-                LocalChangesDetail(item: it, branch: workspace.branch, isMain: workspace.isMain).id("local:\(it.repo)")
+                LocalChangesDetail(item: it, branch: workspace.branch, isMain: workspace.isMain, gitVM: gitVM).id("local:\(it.repo)")
             } else { emptyDetail }
         case nil:
             emptyDetail
@@ -398,7 +405,7 @@ struct PRsBoard: View {
         pollTask = Task { [id = workspace.id] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
-                if state.appActive && state.selection == id { await load() }
+                if state.appActive && state.selection == id { await load(); await gitVM.load() }
             }
         }
     }
@@ -517,20 +524,44 @@ struct LocalChangesDetail: View {
     let item: LocalChangeRepo
     let branch: String
     let isMain: Bool
+    @ObservedObject var gitVM: GitViewModel
 
     @State private var diffFiles: [DiffFile]?
     @State private var selFile: String?
     @State private var splitDiff = CodeDisplayManager.shared.defaultSplit
     @AppStorage("prs.filesTreeVisible") private var filesTreeVisible = true
 
+    private var repoStatus: GitViewModel.RepoStatus? {
+        gitVM.repos.first { $0.repo == item.repo }
+    }
+
+    private var gitStatusByPath: [String: GitViewModel.Change]? {
+        guard let status = repoStatus, !status.isClean else { return nil }
+        return Dictionary(uniqueKeysWithValues: status.changes.map { ($0.path, $0) })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().overlay(Theme.borderSoft)
+            if let status = repoStatus, !status.staged.isEmpty {
+                GitCommitBar(vm: gitVM, repo: status)
+                Divider().overlay(Theme.borderSoft)
+            }
             DiffFilesView(files: diffFiles, selFile: $selFile, filesTreeVisible: $filesTreeVisible, splitDiff: $splitDiff,
-                          loadingLabel: "loading diff…", emptyLabel: "No local changes")
+                          loadingLabel: "loading diff…", emptyLabel: "No local changes",
+                          gitStatus: gitStatusByPath, gitVM: gitVM, gitRepo: item.repo)
         }
         .task(id: item.repo) { await loadDiff() }
+        .overlay(alignment: .top) {
+            if !gitVM.lastError.isEmpty {
+                Text(gitVM.lastError)
+                    .font(.system(size: 11)).foregroundStyle(Theme.danger)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Theme.dangerSoft, in: Capsule())
+                    .padding(.top, 8)
+            }
+        }
     }
 
     private var header: some View {
@@ -552,6 +583,44 @@ struct LocalChangesDetail: View {
         }.value
         diffFiles = files
         if selFile == nil { selFile = files.first?.path }
+    }
+}
+
+struct GitCommitBar: View {
+    @ObservedObject var vm: GitViewModel
+    let repo: GitViewModel.RepoStatus
+
+    private var message: Binding<String> {
+        Binding(get: { vm.commitMessage[repo.repo] ?? "" },
+                set: { vm.commitMessage[repo.repo] = $0 })
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { stagedLabel; commitField; commitButton }
+            VStack(alignment: .leading, spacing: 6) { stagedLabel; HStack(spacing: 6) { commitField; commitButton } }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .background(Theme.bgSoft)
+    }
+
+    private var stagedLabel: some View {
+        Text("\(repo.staged.count) staged").font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
+    }
+
+    private var commitField: some View {
+        TextField("Commit message", text: message, axis: .vertical)
+            .textFieldStyle(.plain).font(.system(size: 11))
+            .padding(6).background(Theme.bg, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.borderSoft, lineWidth: 1))
+    }
+
+    private var commitButton: some View {
+        Button { Task { await vm.commit(repo.repo) } } label: {
+            Label("Commit", systemImage: "checkmark").font(.system(size: 11))
+        }
+        .buttonStyle(.plain).foregroundStyle(Theme.ok)
+        .disabled(vm.busy || (vm.commitMessage[repo.repo] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
     }
 }
 

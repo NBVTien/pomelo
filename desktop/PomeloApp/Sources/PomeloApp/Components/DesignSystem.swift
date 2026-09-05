@@ -184,30 +184,39 @@ struct TreeRow: View {
     var nameColor: Color = Theme.fg
     var nameWeight: Font.Weight = .regular
     var tooltip: String? = nil
+    var hoverTrailing: AnyView? = nil
     let onTap: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 5) {
-                if isDir {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.dim).frame(width: 10)
+        HStack(spacing: 5) {
+            Button(action: onTap) {
+                HStack(spacing: 5) {
+                    if isDir {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Theme.dim).frame(width: 10)
+                    }
+                    if let m = marker {
+                        Text(m.text).font(Theme.mono(9.5, .bold)).foregroundStyle(m.color).frame(width: 12)
+                    }
+                    if let sym = leadingSymbol {
+                        Image(systemName: sym).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
+                    }
+                    Text(name).font(.system(size: 11.5, weight: nameWeight)).foregroundStyle(nameColor)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
                 }
-                if let m = marker {
-                    Text(m.text).font(Theme.mono(9.5, .bold)).foregroundStyle(m.color).frame(width: 12)
-                }
-                if let sym = leadingSymbol {
-                    Image(systemName: sym).font(.system(size: 10.5)).foregroundStyle(Theme.fgMuted)
-                }
-                Text(name).font(.system(size: 11.5, weight: nameWeight)).foregroundStyle(nameColor)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 4)
+                .contentShape(Rectangle())
             }
-            .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
-            .background(selected ? selectionColor : .clear, in: RoundedRectangle(cornerRadius: 6))
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
             .modifier(OptionalTooltip(tooltip))
-        }.buttonStyle(.plain)
+            if hovering, let hoverTrailing {
+                hoverTrailing
+            }
+        }
+        .padding(.leading, indent(depth)).padding(.horizontal, 8).padding(.vertical, 4)
+        .background(selected ? selectionColor : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .onHover { hovering = $0 }
     }
 }
 

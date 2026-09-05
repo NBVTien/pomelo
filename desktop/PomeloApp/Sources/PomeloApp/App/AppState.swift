@@ -59,7 +59,7 @@ import Combine
             switch e.charactersIgnoringModifiers ?? "" {
             case "t": ps.newTerminal(); return nil
             case "1": ps.selectFunc(.services); return nil
-            case "2": if !ws.isMain { ps.selectFunc(.prs) }; return nil
+            case "2": ps.selectFunc(.git); return nil
             case "3": if !ws.isMain { ps.selectFunc(.jira) }; return nil
             case "4": ps.selectFunc(.database); return nil
             case "5": if !ws.isMain { ps.selectFunc(.review) }; return nil
