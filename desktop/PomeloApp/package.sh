@@ -30,7 +30,7 @@ GOTOOLCHAIN=local CGO_ENABLED=1 go build -C "$repo" \
 cp "$here/Vendor/libpom.h" "$here/Sources/CPom/include/libpom.h"
 
 # Xcode (not `swift build`): CodeEditSourceEditor pulls a sub-dep whose asset
-# catalog only builds under Xcode's resource pipeline. Release config = no profiling.
+# catalog only builds under Xcode's resource pipeline.
 echo "==> xcodebuild -configuration Release"
 cd "$here"
 PRODUCTS="$here/.ddata/Build/Products/Release"
@@ -39,8 +39,7 @@ xcodebuild -scheme PomeloApp -configuration Release \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$here/.ddata" \
     -skipPackagePluginValidation \
-    ENABLE_TESTABILITY=NO SWIFT_ENABLE_TESTABILITY=NO CLANG_ENABLE_CODE_COVERAGE=NO \
-    build 2>&1 | grep -vE "was built for newer|ld: warning:|LLVM Profile Error" || true
+    build 2>&1 | grep -vE "was built for newer|ld: warning:" || true
 BIN="$PRODUCTS/PomeloApp"
 test -x "$BIN" || { echo "build failed: no PomeloApp binary"; exit 1; }
 

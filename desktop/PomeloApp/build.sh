@@ -24,7 +24,7 @@ xcodebuild -scheme PomeloApp -configuration Debug \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$here/.ddata" \
     -skipPackagePluginValidation \
-    build 2>&1 | grep -vE "was built for newer|ld: warning:|LLVM Profile Error" || true
+    build 2>&1 | grep -vE "was built for newer|ld: warning:" || true
 
 test -x "$PRODUCTS/PomeloApp" || { echo "build failed: no PomeloApp binary"; exit 1; }
 
